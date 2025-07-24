@@ -54,12 +54,21 @@ class CameraDataset(torch.utils.data.Dataset):
             resized_image_rgb = PILtoTorch(image, (camera.image_width, camera.image_height))
 
             image = resized_image_rgb[:3, ...]
-
+            
             if resized_image_rgb.shape[1] == 4:
                 gt_alpha_mask = resized_image_rgb[3:4, ...]
                 image *= gt_alpha_mask
             
             camera.original_image = image.clamp(0.0, 1.0)
+
+            # LM3D : load foreground mask
+            #TODO: might causes bugs
+            if camera.fg_mask_path is not None:
+                fg_mask = Image.open(camera.fg_mask_path)
+                fg_data = np.array(fg_mask.convert("L"))
+                fg_data = torch.tensor(fg_data, dtype=torch.float32) / 255.0
+                camera.fg_mask = fg_data
+
             return camera
         elif isinstance(idx, slice):
             return CameraDataset(self.cameras[idx])
@@ -70,7 +79,7 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : Union[GaussianModel, FlameGaussianModel], load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(self, args : ModelParams, gaussians : Union[GaussianModel, FlameGaussianModel], load_iteration=None, shuffle=True, resolution_scales=[1.0], ply_path=None):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -150,7 +159,12 @@ class Scene:
                 has_target=args.target_path != "",
             )
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            if ply_path is not None: # LM3D : load from ply
+                print("Loading point cloud from provided ply file: {}".format(ply_path))
+                self.gaussians.load_ply(ply_path, has_target=args.target_path != "")
+            else:
+                # main train
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

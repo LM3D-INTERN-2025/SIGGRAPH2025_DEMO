@@ -37,8 +37,15 @@ class FlameGaussianModel(GaussianModel):
 
         # binding is initialized once the mesh topology is known
         if self.binding is None:
-            self.binding = torch.arange(len(self.flame_model.faces)).cuda()
-            self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda()
+            # self.binding = torch.arange(len(self.flame_model.faces)).cuda()
+
+            # LM3D : initialize 100 per face
+            self.binding = torch.repeat_interleave(
+                torch.arange(len(self.flame_model.faces)), 
+                100
+            ).cuda()
+
+            self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda() * 100
 
     def load_meshes(self, train_meshes, test_meshes, tgt_train_meshes, tgt_test_meshes):
         if self.flame_param is None:
@@ -149,6 +156,7 @@ class FlameGaussianModel(GaussianModel):
         # for mesh rendering
         self.verts = verts
         self.faces = faces
+        self.triangles = triangles # LM3D : used somewhere else
 
         # for mesh regularization
         self.verts_cano = verts_cano
@@ -224,7 +232,7 @@ class FlameGaussianModel(GaussianModel):
         np.savez(str(npz_path), **flame_param)
 
     def load_ply(self, path, **kwargs):
-        super().load_ply(path)
+        super().load_ply(path, **kwargs)
 
         if not kwargs['has_target']:
             # When there is no target motion specified, use the finetuned FLAME parameters.

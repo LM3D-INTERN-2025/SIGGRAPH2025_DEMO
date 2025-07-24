@@ -50,6 +50,7 @@ class ModelParams(ParamGroup):
         self._source_path = ""  # Path to the source data set
         self._target_path = ""  # Path to the target data set for pose and expression transfer
         self._model_path = ""  # Path to the folder to save trained models
+        self.teeth_path = ""  # Path to the teeth mesh
         self._images = "images"
         self._resolution = -1
         self._white_background = False
@@ -59,6 +60,8 @@ class ModelParams(ParamGroup):
         self.disable_flame_static_offset = False
         self.not_finetune_flame_params = False
         self.select_camera_id = -1
+
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -71,34 +74,36 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
+        self.interval_media = 1000  
+        self.load_from_iter = 5000
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         # 3D Gaussians
-        self.iterations = 600_000  # 30_000 (original)
+        self.iterations = 5_000  # 30_000 (original)
         self.position_lr_init = 0.005  # (scaled up according to mean triangle scale)  #0.00016 (original)
-        self.position_lr_final = 0.00005  # (scaled up according to mean triangle scale) # 0.0000016 (original)
+        self.position_lr_final = 0.0005 # (scaled up according to mean triangle scale) # 0.0000016 (original)
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 600_000  # 30_000 (original)
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
-        self.scaling_lr = 0.017  # (scaled up according to mean triangle scale)  # 0.005 (original)
+        self.scaling_lr = 0.001  # (scaled up according to mean triangle scale)  # 0.005 (original)
         self.rotation_lr = 0.001
-        self.densification_interval = 2_000  # 100 (original)
-        self.opacity_reset_interval = 60_000 # 3000 (original)
-        self.densify_from_iter = 10_000  # 500 (original)
+        self.densification_interval = 100  # 100 (original)
+        self.opacity_reset_interval = 1000 # 3000 (original)
+        self.densify_from_iter = 100  # 500 (original)
         self.densify_until_iter = 600_000  # 15_000 (original)
-        self.densify_grad_threshold = 0.0002
+        self.densify_grad_threshold = 0.00002
         
         # GaussianAvatars
         self.flame_expr_lr = 1e-3
         self.flame_trans_lr = 1e-6
         self.flame_pose_lr = 1e-5
         self.percent_dense = 0.01
-        self.lambda_dssim = 0.2
-        self.lambda_xyz = 1e-2
-        self.threshold_xyz = 1.
+        self.lambda_dssim = 0.5
+        self.lambda_xyz = 1e-1
+        self.threshold_xyz = 0.5
         self.metric_xyz = False
         self.lambda_scale = 1.
         self.threshold_scale = 0.6
@@ -106,6 +111,11 @@ class OptimizationParams(ParamGroup):
         self.lambda_dynamic_offset = 0.
         self.lambda_laplacian = 0.
         self.lambda_dynamic_offset_std = 0  #1.
+
+        # Lumio Optims
+        self.lambda_filter = 10
+        self.bcull = False
+        self.depth = True
 
         super().__init__(parser, "Optimization Parameters")
 
