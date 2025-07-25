@@ -267,7 +267,15 @@ class FlameGaussianModel(GaussianModel):
             self.num_timesteps = self.flame_param['expr'].shape[0]  # required by viewers
         
         if 'disable_fid' in kwargs and len(kwargs['disable_fid']) > 0:
-            mask = (self.binding[:, None] != kwargs['disable_fid'][None, :]).all(-1)
+            # mask = (self.binding[:, None] != kwargs['disable_fid'][None, :]).all(-1)
+
+            # LM3D : fix CUDA OOM
+            disable_fid = torch.tensor(kwargs['disable_fid'], device='cpu')
+            binding_cpu = self.binding.cpu()
+
+            mask_cpu = ~torch.isin(binding_cpu, disable_fid)
+            mask = mask_cpu.to(self.binding.device)
+            # --------------------------------------------
 
             self.binding = self.binding[mask]
             self._xyz = self._xyz[mask]

@@ -101,14 +101,14 @@ class LocalViewer(Mini3DViewer):
         else:
             self.gaussians = GaussianModel(self.cfg.sh_degree)
 
-        # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['left_half'])
+        selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2', 'left_half', 'eye_pit', 'eyeballs'])
         # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
         # unselected_fid = self.gaussians.flame_model.mask.get_fid_except_fids(selected_fid)
-        unselected_fid = []
+        # unselected_fid = []
         
         if self.cfg.point_path is not None:
             if self.cfg.point_path.exists():
-                self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=unselected_fid)
+                self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=selected_fid)
             else:
                 raise FileNotFoundError(f'{self.cfg.point_path} does not exist.')
 
