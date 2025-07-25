@@ -198,7 +198,11 @@ class GaussianModel:
         if pcd == None:
             assert self.binding is not None
             num_pts = self.binding.shape[0]
-            fused_point_cloud = torch.ones((num_pts, 3)).float().cuda()
+            # center of the bary
+            # fused_point_cloud = torch.ones((num_pts, 3)).float().cuda()
+            # randomly generated
+            fused_point_cloud = torch.tensor(np.random.random((num_pts, 3))).float().cuda()
+
             fused_color = torch.tensor(np.random.random((num_pts, 3)) / 255.0).float().cuda()
         else:
             fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
@@ -655,7 +659,7 @@ class GaussianModel:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        self.prune_points(prune_mask)
+        # self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
 

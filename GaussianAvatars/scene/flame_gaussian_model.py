@@ -38,14 +38,15 @@ class FlameGaussianModel(GaussianModel):
         # binding is initialized once the mesh topology is known
         if self.binding is None:
             # self.binding = torch.arange(len(self.flame_model.faces)).cuda()
+            n_init = 30
+            n_eye_init = 5000
+            eyelid = self.flame_model.mask.v.eyelids
+            repeated_eyelid = torch.repeat_interleave(eyelid, n_eye_init).cuda()
+            self.binding = torch.repeat_interleave(torch.arange(len(self.flame_model.faces)), n_init).cuda()
+            self.binding = torch.cat((self.binding, repeated_eyelid), dim=0)
 
-            # LM3D : initialize 100 per face
-            self.binding = torch.repeat_interleave(
-                torch.arange(len(self.flame_model.faces)), 
-                100
-            ).cuda()
-
-            self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda() * 100
+            self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda() * n_init
+            self.binding_counter[eyelid] += n_eye_init
 
     def load_meshes(self, train_meshes, test_meshes, tgt_train_meshes, tgt_test_meshes):
         if self.flame_param is None:
