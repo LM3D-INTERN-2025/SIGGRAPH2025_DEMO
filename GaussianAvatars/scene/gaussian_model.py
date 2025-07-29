@@ -180,7 +180,7 @@ class GaussianModel:
         return self.opacity_activation(self._opacity)
 
     # LM3D : clamp scaling
-    def clamp_scaling(self, max_scaling=0.2):
+    def clamp_scaling(self, max_scaling=0.5):
         max_scaling = np.log(max_scaling)
         self._scaling = torch.clamp(self._scaling, max=max_scaling)
 

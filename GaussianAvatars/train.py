@@ -52,7 +52,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         mesh_renderer = NVDiffRenderer()
     else:
         gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, resolution_scales=[dataset.scale_res])
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -64,7 +64,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    loader_camera_train = DataLoader(scene.getTrainCameras(), batch_size=None, shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
+    loader_camera_train = DataLoader(scene.getTrainCameras(scale=dataset.scale_res), batch_size=None, shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
     iter_camera_train = iter(loader_camera_train)
     # viewpoint_stack = None
     ema_loss_for_log = 0.0
@@ -139,8 +139,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
 
+        # print("Shapes: image {}, gt_image {}".format(
+        #     image.shape, gt_image.shape))
+
         # LM3D : alpha map for image
         alpha_map = viewpoint_cam.fg_mask.cuda() # (w, h)
+        
         alpha_map = alpha_map.unsqueeze(0).expand_as(gt_image)  # (3, w, h)
         gt_image = gt_image * alpha_map # (3, w, h)
 
@@ -224,7 +228,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, losses, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            training_report(tb_writer, iteration, losses, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (dataset ,pipe, background))
             if (iteration in saving_iterations):
                 print("[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -248,7 +252,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
-            gaussians.clamp_scaling()
+            gaussians.clamp_scaling(max_scaling=opt.max_scaling)  # LM3D : clamp scaling to 0.5
 
             if (iteration in checkpoint_iterations):
                 print("[ITER {}] Saving Checkpoint".format(iteration))
@@ -277,6 +281,7 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, losses, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+    dataset = renderArgs[0]
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', losses['l1'].item(), iteration)
         tb_writer.add_scalar('train_loss_patches/ssim_loss', losses['ssim'].item(), iteration)
@@ -298,8 +303,8 @@ def training_report(tb_writer, iteration, losses, elapsed, testing_iterations, s
         print("[ITER {}] Evaluating".format(iteration))
         torch.cuda.empty_cache()
         validation_configs = (
-            {'name': 'val', 'cameras' : scene.getValCameras()},
-            {'name': 'test', 'cameras' : scene.getTestCameras()},
+            {'name': 'val', 'cameras' : scene.getValCameras(scale=dataset.scale_res)},
+            {'name': 'test', 'cameras' : scene.getTestCameras(scale=dataset.scale_res)},
         )
 
         for config in validation_configs:

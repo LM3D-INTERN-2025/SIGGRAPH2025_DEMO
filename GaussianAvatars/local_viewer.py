@@ -26,6 +26,7 @@ from gaussian_renderer import GaussianModel, FlameGaussianModel
 from gaussian_renderer import render
 from mesh_renderer import NVDiffRenderer
 
+import time
 
 @dataclass
 class PipelineConfig:
@@ -50,7 +51,7 @@ class Config(Mini3DViewerConfig):
     """default GUI background color"""
     save_folder: Path = Path("./viewer_output")
     """default saving folder"""
-    fps: int = 25
+    fps: int = 60
     """default fps for recording"""
     keyframe_interval: int = 1
     """default keyframe interval"""
@@ -676,6 +677,8 @@ class LocalViewer(Mini3DViewer):
 
                             dpg.set_value("_slider_timestep", self.timestep)
                             self.gaussians.select_mesh_by_timestep(self.timestep)
+                            
+                            time.sleep(1 / self.cfg.fps)
 
                         state_dict = self.get_state_dict_record()
                         self.apply_state_dict(state_dict)

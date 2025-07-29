@@ -60,6 +60,9 @@ class ModelParams(ParamGroup):
         self.disable_flame_static_offset = False
         self.not_finetune_flame_params = False
         self.select_camera_id = -1
+        self.omit_camera_id = [13, 14] # List of camera IDs to omit from training
+
+        self.scale_res = 0.25
 
 
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -88,7 +91,7 @@ class OptimizationParams(ParamGroup):
         self.position_lr_max_steps = 600_000  # 30_000 (original)
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
-        self.scaling_lr = 0.001  # (scaled up according to mean triangle scale)  # 0.005 (original)
+        self.scaling_lr = 0.005  # (scaled up according to mean triangle scale)  # 0.005 (original)
         self.rotation_lr = 0.001
         self.densification_interval = 100  # 100 (original)
         self.opacity_reset_interval = 1000 # 3000 (original)
@@ -116,6 +119,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_filter = 10
         self.bcull = False
         self.depth = True
+        self.max_scaling = 0.5  # LM3D : clamp scaling to 0.5
 
         super().__init__(parser, "Optimization Parameters")
 

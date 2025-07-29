@@ -53,8 +53,9 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
     for id, c in tqdm(enumerate(cam_infos), total=len(cam_infos)):
-        if args.select_camera_id != -1 and c.camera_id is not None:
-            if c.camera_id != args.select_camera_id:
+        # if args.select_camera_id != -1 and c.camera_id is not None:
+        if args.omit_camera_id != [] and c.camera_id is not None:
+            if c.camera_id in args.omit_camera_id:
                 continue
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
