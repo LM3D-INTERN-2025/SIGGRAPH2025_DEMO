@@ -59,6 +59,9 @@ class ModelParams(ParamGroup):
         self.disable_flame_static_offset = False
         self.not_finetune_flame_params = False
         self.select_camera_id = -1
+        self.coord = "bary"  # normal, bary = barycentric
+        self.ply_path = "" # Path to initial ply file for training
+        self.texture_path = ""  # Path to the texture file
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -106,6 +109,27 @@ class OptimizationParams(ParamGroup):
         self.lambda_dynamic_offset = 0.
         self.lambda_laplacian = 0.
         self.lambda_dynamic_offset_std = 0  #1.
+
+        self.disable_gaussian_splats = True
+        self.bfc = True
+        self.opacity = True
+        self.with_texture = True
+        self.texture_start_iter = 0
+        self.train_texture = True
+        self.texture_lr = 0.0025
+        self.texture_lambda = 0.1
+
+        self.initial_pc_size = 0.01 # 1.0 (original)
+
+        if self.disable_gaussian_splats:
+            self.scaling_lr = 0.0
+            self.opacity_reset_interval = 600_000
+            self.densify_from_iter = 600_000
+            self.densify_until_iter = -1
+        
+        if self.train_texture:
+            self.with_texture = True
+            self.texture_start_iter = 0
 
         super().__init__(parser, "Optimization Parameters")
 
