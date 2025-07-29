@@ -38,9 +38,9 @@ class FlameGaussianModel(GaussianModel):
         # binding is initialized once the mesh topology is known
         if self.binding is None:
             # self.binding = torch.arange(len(self.flame_model.faces)).cuda()
-            n_init = 30
-            n_eye_init = 5000
-            eyelid = self.flame_model.mask.v.eyelids
+            n_init = 50
+            n_eye_init = 200
+            eyelid = self.flame_model.mask.get_fid_by_region(['eye_region'])
             repeated_eyelid = torch.repeat_interleave(eyelid, n_eye_init).cuda()
             self.binding = torch.repeat_interleave(torch.arange(len(self.flame_model.faces)), n_init).cuda()
             self.binding = torch.cat((self.binding, repeated_eyelid), dim=0)

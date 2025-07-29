@@ -101,8 +101,9 @@ class LocalViewer(Mini3DViewer):
         else:
             self.gaussians = GaussianModel(self.cfg.sh_degree)
 
-        selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2', 'left_half', 'eye_pit', 'eyeballs'])
-        # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
+        selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2'])
+        # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['eye_region'])
+        # # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
         # unselected_fid = self.gaussians.flame_model.mask.get_fid_except_fids(selected_fid)
         # unselected_fid = []
         
@@ -669,6 +670,10 @@ class LocalViewer(Mini3DViewer):
                         dpg.set_value("_slider_record_timestep", record_timestep + 1)
                         if dpg.get_value("_checkbox_dynamic_record"):
                             self.timestep = min(self.timestep + 1, self.num_timesteps - 1)
+
+                            if self.timestep >= self.num_timesteps - 1:
+                                self.timestep = 0
+
                             dpg.set_value("_slider_timestep", self.timestep)
                             self.gaussians.select_mesh_by_timestep(self.timestep)
 

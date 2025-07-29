@@ -91,10 +91,10 @@ class OptimizationParams(ParamGroup):
         self.scaling_lr = 0.001  # (scaled up according to mean triangle scale)  # 0.005 (original)
         self.rotation_lr = 0.001
         self.densification_interval = 100  # 100 (original)
-        self.opacity_reset_interval = 10_000 # 3000 (original)
+        self.opacity_reset_interval = 1000 # 3000 (original)
         self.densify_from_iter = 100  # 500 (original)
         self.densify_until_iter = 600_000  # 15_000 (original)
-        self.densify_grad_threshold = 0.00002
+        self.densify_grad_threshold = 0.0002
         
         # GaussianAvatars
         self.flame_expr_lr = 1e-3

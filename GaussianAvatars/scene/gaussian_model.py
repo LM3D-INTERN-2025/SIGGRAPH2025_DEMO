@@ -150,7 +150,8 @@ class GaussianModel:
             faces = self.flame_model.faces # (F, 3)
             vert_binding = faces[self.binding] # (PC, 3)
             verts_xyz = verts[:, vert_binding] # (B, PC, 3, 3)
-            bary = self._xyz.clamp(min=0.00001)
+            bary = torch.abs(self._xyz)
+            # bary = self._xyz.clamp(min=0.00001)
 
             # convert normal xyz coordinates to barycentric coordinates
             # bary = torch.bmm(self._xyz[:, None, :], verts_xyz[0, :, :, :].transpose(1, 2)) # (PC, 3)
@@ -626,6 +627,7 @@ class GaussianModel:
             print("Total points cloned:", selected_pts_mask.sum().item(), "out of", selected_pts_mask.shape[0])
         # -----------------------------------------------------------------------------
         
+        # new_xyz = torch.tensor(np.random.random((selected_pts_mask.sum().item(), 3)), device="cuda").float()
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
@@ -659,7 +661,7 @@ class GaussianModel:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        # self.prune_points(prune_mask)
+        self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
 
