@@ -90,7 +90,7 @@ class Scene:
 
 
     def __init__(self, args : ModelParams, gaussians : Union[GaussianModel, FlameGaussianModel], load_iteration=None, shuffle=True, resolution_scales=[1.0], ply_path=None, opt = None):
-
+        print("debug res scale", resolution_scales)
         """b
         :param path: Path to colmap scene main folder.
         """

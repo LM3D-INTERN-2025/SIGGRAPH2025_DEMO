@@ -66,7 +66,7 @@ class ModelParams(ParamGroup):
         self.texture_path = ""  # Path to the texture file
 
         self.omit_camera_id = [13, 14] # List of camera IDs to omit from training
-        self.scale_res = 1.0
+        self.scale_res = 0.25
 
 
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -81,14 +81,14 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
-        self.interval_media = 1000  
+        self.interval_media = 1  
         self.load_from_iter = 5000
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         # 3D Gaussians
-        self.iterations = 2_000  # 30_000 (original)
+        self.iterations = 50  # 30_000 (original)
         self.position_lr_init = 0.005  # (scaled up according to mean triangle scale)  #0.00016 (original)
         self.position_lr_final = 0.0005 # (scaled up according to mean triangle scale) # 0.0000016 (original)
         self.position_lr_delay_mult = 0.01
@@ -120,8 +120,8 @@ class OptimizationParams(ParamGroup):
         self.lambda_dynamic_offset_std = 0  #1.
 
 
-        self.disable_gaussian_splats = False
-        self.with_texture = False
+        self.disable_gaussian_splats = True
+        self.with_texture = True
         self.texture_start_iter = 0
         self.train_texture = False
         self.texture_lr = 0.0025

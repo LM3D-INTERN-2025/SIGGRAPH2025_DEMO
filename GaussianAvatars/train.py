@@ -184,8 +184,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             rgb_mesh = rgba_mesh[:3, :, :]
             alpha_mesh = rgba_mesh[3:, :, :]
             # print("debug texture", image.shape, rgba_mesh.shape,torch.max(image_s[3:, :, :]), torch.min(image_s[3:, :, :]),torch.max(alpha_mesh), torch.min(alpha_mesh))
-            image[:3, :, :] += rgb_mesh * (1 - alpha_map)
-            image[3:, :, :] += alpha_mesh * (1 - alpha_map)
+            image += rgb_mesh * (1 - alpha_map)
+            alpha_map += alpha_mesh * (1 - alpha_map)
 
 
         if iteration % pipe.interval_media == 0:

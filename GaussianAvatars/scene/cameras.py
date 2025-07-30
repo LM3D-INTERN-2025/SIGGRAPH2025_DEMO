@@ -47,7 +47,6 @@ class Camera(nn.Module):
         # trans += np.array([.0001,.0001,0.0])
         self.trans = trans
         self.scale = scale
-
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1)  #.cuda()
 
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy, cx=self.cx, cy=self.cy, w=self.image_width, h=self.image_height).transpose(0,1)  #.cuda()

@@ -19,6 +19,7 @@ WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
     orig_w, orig_h = cam_info.width, cam_info.height
+    orig_cx, orig_cy = cam_info.cx, cam_info.cy
 
     if args.resolution in [1, 2, 4, 8]:
         image_width, image_height = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -38,10 +39,11 @@ def loadCam(args, id, cam_info, resolution_scale):
 
         scale = float(global_down) * float(resolution_scale)
         image_width, image_height = (int(orig_w / scale), int(orig_h / scale))
+        cx, cy = (int(orig_cx / scale), int(orig_cy / scale))
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                 FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
-                cx=cam_info.cx, cy=cam_info.cy, 
+                cx=cx, cy=cy, 
                 image_width=image_width, image_height=image_height,
                 bg=cam_info.bg, 
                 image=cam_info.image, 
