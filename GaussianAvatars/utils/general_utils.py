@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
+import json
 import torch
 import sys
 from datetime import datetime
@@ -131,3 +133,16 @@ def safe_state(silent):
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.set_device(torch.device("cuda:0"))
+
+def save_config(model, opt, pipe):
+    
+    config_dict = {
+        'model': {k: v for k, v in vars(model).items()},
+        'optimization': {k: v for k, v in vars(opt).items()},
+        'pipeline': {k: v for k, v in vars(pipe).items()}
+    }
+
+    config_path = os.path.join(model.model_path, 'training_config.json')
+    with open(config_path, 'w+') as f:
+        json.dump(config_dict, f, indent=4)
+    print(f"Configuration saved to {config_path}")

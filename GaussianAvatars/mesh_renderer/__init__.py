@@ -181,7 +181,7 @@ class NVDiffRenderer(torch.nn.Module):
         return diffuse
     
     def render_from_camera(
-        self, verts, faces, cam: MiniCam, background_color=[1., 1., 1.],
+        self, verts, faces, verts_uv, faces_uv, tex, alpha, cam: MiniCam, background_color=[1., 1., 1.],
         face_colors=None,
     ):
         """
@@ -195,24 +195,29 @@ class NVDiffRenderer(torch.nn.Module):
         full_proj_transform = cam.full_proj_transform.clone()
         full_proj_transform[:,1] = -full_proj_transform[:,1]
         full_proj = full_proj_transform.T[None, ...].to(verts)
-
+        if cam.image_width == 540 and cam.image_height == 960:
+            print("debug yueng yuu jaaa")
         if self.use_opengl:
             image_size = cam.image_height, cam.image_width
-            
-            return self.render_mesh(verts, faces, RT, full_proj, image_size, background_color, face_colors)
+            output = self.render_mesh(verts, faces, verts_uv, faces_uv, RT, full_proj, image_size, tex, alpha, background_color, face_colors)
+            return output
         else:
             if cam.image_height > 2048 or cam.image_width > 2048:
                 image_size = 2048, 2048
             else:
                 image_size = int(cam.image_height // 8 * 8), int(cam.image_width // 8 * 8)
 
-            output = self.render_mesh(verts, faces, RT, full_proj, image_size, background_color, face_colors)
+            output = self.render_mesh(verts, faces, verts_uv, faces_uv, RT, full_proj, image_size, tex, alpha, background_color, face_colors)
             for k, v in output.items():
                 output[k] = F.interpolate(v.permute(0, 3, 1, 2), (cam.image_height, cam.image_width), mode='bilinear').permute(0, 2, 3, 1)
+            
+            # print("debug output", output.keys())
+            # for k, v in output.items():
+            #     print("debug output", k, v.shape)
             return output
     
     def render_mesh(
-        self, verts, faces, RT, full_proj, image_size, background_color=[1., 1., 1.],
+        self, verts, faces, verts_uvs, faces_uvs, RT, full_proj, image_size, tex, alpha_tex, background_color=[1., 1., 1.],
         face_colors=None,
     ):
         """
@@ -220,11 +225,12 @@ class NVDiffRenderer(torch.nn.Module):
         """
 
         verts_camera = self.world_to_camera(verts, RT)[..., :3]
-        verts_clip = self.world_to_clip(verts, None, None, image_size, mvp=full_proj)
-        tri = faces.int()
-        rast_out, rast_out_db = dr.rasterize(self.glctx, verts_clip, tri, image_size)
+        verts_clip = self.world_to_clip(verts, None, None, image_size, mvp=full_proj) # (B, V, 4)
+        tri = faces.int() # (F, 3)
+        rast_out, rast_out_db = dr.rasterize(self.glctx, verts_clip, tri, image_size) # (B, W, H, 4) (B, W, H, 4)
+        # print("debug rast_out", rast_out.shape, rast_out_db.shape, verts_clip.shape, tri.shape)
 
-        faces = faces.int()
+        faces = faces.int() # (1, F, 3)
         fg_mask = torch.clamp(rast_out[..., -1:], 0, 1).bool()
         face_id = torch.clamp(rast_out[..., -1:].long() - 1, 0)  # (B, W, H, 1)
         W, H = face_id.shape[1:3]
@@ -234,16 +240,53 @@ class NVDiffRenderer(torch.nn.Module):
         face_normals_ = face_normals[:, None, None, :, :].expand(-1, W, H, -1, -1)  # (B, 1, 1, F, 3)
         normal = torch.gather(face_normals_, -2, face_id_).squeeze(-2) # (B, W, H, 3)
 
+        face_vertices = faces[face_id[:,:,:,0]]# (B, H, W, 3)
+        vnormals = self.compute_v_normals(verts_camera, faces)  # (B, V, 3)
+        vn0 = vnormals[0,face_vertices[:,:,:,0]]  # (B, H, W, 3)
+        vn1 = vnormals[0,face_vertices[:,:,:,1]]  # (B, H, W, 3)
+        vn2 = vnormals[0,face_vertices[:,:,:,2]]  # (B, H, W, 3)
+        
+        interpolated_normal = (
+            rast_out[..., 0:1] * vn0 +
+            rast_out[..., 1:2] * vn1 +
+            (1. - rast_out[..., 0:1] - rast_out[..., 1:2]) * vn2
+        ) # (B, H, W, 3)
+        
+        interpolated_normal = torch.nn.functional.normalize(interpolated_normal, dim=-1)
+        normal = interpolated_normal
+        ####
+
         if face_colors is not None:
             face_colors_ = face_colors[:, None, None, :, :].expand(-1, W, H, -1, -1)  # (B, 1, 1, F, 3)
             albedo = torch.gather(face_colors_, -2, face_id_).squeeze(-2) # (B, W, H, 3)
         else:
             albedo = torch.ones_like(normal)
-            
+
+        #### from vhap
+        verts_uv = verts_uvs.clone()
+        faces_uv = faces_uvs.clone()
+        verts_uv[:, 1] = 1 - verts_uv[:, 1]
+        faces_uv = faces_uv.to(torch.int32)  # (F, 3)
+        texc, texd = dr.interpolate(verts_uv[None, ...], rast_out, faces_uv, rast_db=rast_out_db, diff_attrs='all')
+        # if align_texture_except_fid is not None:  # TODO: rethink when shading with normal
+        #     fid = rast_out[..., -1:].long()  # the face index is shifted by +1
+        #     mask = torch.zeros(faces.shape[0]+1, dtype=torch.bool, device=fid.device)
+        #     mask[align_texture_except_fid + 1] = True
+        #     b, h, w = rast_out.shape[:3]
+        #     rast_mask = torch.gather(mask.reshape(1, 1, 1, -1).expand(b, h, w, -1), 3, fid)
+        #     texc = torch.where(rast_mask, texc.detach(), texc)
+
+        tex = tex.permute(0, 2, 3, 1).contiguous() 
+        albedo = dr.texture(tex, texc, texd, filter_mode='linear-mipmap-linear', max_mip_level=None)
+        alpha_tex = alpha_tex.permute(0, 2, 3, 1).contiguous().repeat(1,1,1,3)
+        alpha_albedo = dr.texture(alpha_tex, texc, texd, filter_mode='linear-mipmap-linear', max_mip_level=None)
+
         # ---- shading ----
         diffuse = self.shade(normal)
-
-        rgb = albedo * diffuse
+        
+        rgb = albedo
+        # rgb = albedo * diffuse
+        # alpha = fg_mask.float() * alpha_albedo[..., 0:1]
         alpha = fg_mask.float()
         rgba = torch.cat([rgb, alpha], dim=-1)
 
