@@ -121,7 +121,7 @@ class GaussianModel:
             # Toyota Motor Europe NV/SA and its affiliated companies retain all intellectual property and proprietary rights in and to the following code lines and related documentation. Any commercial use, reproduction, disclosure or distribution of these code lines and related documentation without an express license agreement from Toyota Motor Europe NV/SA is strictly prohibited.
             if self.face_scaling is None:
                 self.select_mesh_by_timestep(0)
-
+            
             scaling = self.scaling_activation(self._scaling)
             tmp = scaling * self.face_scaling[self.binding]
             # TODO optimize
@@ -152,6 +152,26 @@ class GaussianModel:
             # Toyota Motor Europe NV/SA and its affiliated companies retain all intellectual property and proprietary rights in and to the following code lines and related documentation. Any commercial use, reproduction, disclosure or distribution of these code lines and related documentation without an express license agreement from Toyota Motor Europe NV/SA is strictly prohibited.
             if self.face_center is None:
                 self.select_mesh_by_timestep(0)
+
+            verts = self.verts # (B, V, 3)
+            faces = self.flame_model.faces # (F, 3)
+            vert_binding = faces[self.binding] # (PC, 3)
+            verts_xyz = verts[:, vert_binding] # (B, PC, 3, 3)
+            bary = torch.abs(self._xyz)
+            # bary = self._xyz.clamp(min=0.00001)
+
+            # convert normal xyz coordinates to barycentric coordinates
+            # bary = torch.bmm(self._xyz[:, None, :], verts_xyz[0, :, :, :].transpose(1, 2)) # (PC, 3)
+
+
+            bary = bary/bary.sum(dim=1, keepdim=True) # (PC, 3)
+            # print("debug bary:", bary[...].shape, "\n verts_xyz:", verts_xyz.shape)
+            b0 = bary[:, 0, None] * verts_xyz[0, :, 0, :] # (PC, 3)
+            b1 = bary[:, 1, None] * verts_xyz[0, :, 1, :] # (PC, 3)
+            b2 = bary[:, 2, None] * verts_xyz[0, :, 2, :] # (PC, 3)
+            # print("debug b0:", b0.shape, "\n debug b1:", b1.shape, "\n debug b2:", b2.shape)
+            return (b0 + b1 + b2)# (PC, 3)
+
             
             if self.coord == "bary":
                 verts = self.verts # (B, V, 3)
@@ -191,8 +211,12 @@ class GaussianModel:
         dbg = torch.ones_like(self._opacity)
         # print("debug opacity:", type(dbg),dbg.shape,dbg)
         return self.opacity_activation(self._opacity)
-        # return dbg
-    
+
+    # LM3D : clamp scaling
+    def clamp_scaling(self, max_scaling=0.5):
+        max_scaling = np.log(max_scaling)
+        self._scaling = torch.clamp(self._scaling, max=max_scaling)
+
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
     
@@ -208,10 +232,15 @@ class GaussianModel:
         if pcd == None:
             assert self.binding is not None
             num_pts = self.binding.shape[0]
+
             if self.coord == "bary":
                 fused_point_cloud = torch.ones((num_pts, 3)).float().cuda()
+                fused_point_cloud = torch.tensor(np.random.random((num_pts, 3))).float().cuda()
+
             else:
                 fused_point_cloud = torch.zeros((num_pts, 3)).float().cuda()
+
+
             fused_color = torch.tensor(np.random.random((num_pts, 3)) / 255.0).float().cuda()
         else:
             fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
@@ -229,13 +258,16 @@ class GaussianModel:
             dist2 = torch.clamp_min(distCUDA2(self.get_xyz), 0.0000001)
             scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         else:
-            # scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda"))
-            #### edit initial scaling
-            scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda")* initial_pc_size) 
+
+            scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda")* initial_pc_size) # LM3D : 0.01 is the initial scale
+
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        # opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+
+        # LM3D : opacity set to 1.0 for all points
+        opacities = inverse_sigmoid(torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
         
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -279,6 +311,11 @@ class GaussianModel:
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
+            
+    # LM3D : reset z (y)
+    def reset_z_position(self):
+        """ Reset the z position of the points to 0. """
+        self._xyz.data[:, 1] = 0.0
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -496,6 +533,8 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
+
+        # LM3D : ------------------------------------------------------------------------------------
         # optional fields
         binding_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("binding")]
         if len(binding_names) > 0:
@@ -505,7 +544,6 @@ class GaussianModel:
                 binding[:, idx] = np.asarray(plydata.elements[0][attr_name])
             # self.binding = torch.tensor(binding, dtype=torch.int32, device="cuda").squeeze(-1)
 
-        ####
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
@@ -549,6 +587,22 @@ class GaussianModel:
 
         self.binding_counter = torch.bincount(self.binding)
         
+
+        ####
+        print("debug train", 'is_training' in kwargs and kwargs['is_training'] is True)
+        if 'is_training' in kwargs and kwargs['is_training'] is True:
+            self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+            self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+            self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
+            num_pts = self._xyz.shape[0]
+            fused_color = torch.tensor(np.random.random((num_pts, 3)) / 255.0).float().cuda()
+            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            features[:, :3, 0 ] = fused_color
+            features[:, 3:, 1:] = 0.0
+            self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+            self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        # else:
+            # print(kwargs)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         ####
@@ -598,6 +652,7 @@ class GaussianModel:
             counter_prune.scatter_add_(0, binding_to_prune, torch.ones_like(binding_to_prune, dtype=torch.int32, device="cuda"))
             mask_redundant = (self.binding_counter - counter_prune) > 0
             mask[mask.clone()] = mask_redundant[binding_to_prune]
+            print("pruned points:", mask.sum().item(), "out of", mask.shape[0])
 
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
@@ -700,12 +755,22 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def densify_and_clone(self, grads, grad_threshold, scene_extent):
+    def densify_and_clone(self, grads, grad_threshold, scene_extent, visibility_filter=None):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
+
+        # LM3D : clone also the invisible points
+        print("Clone visible points:", selected_pts_mask.sum().item(), "out of", selected_pts_mask.shape[0])
+        if visibility_filter is not None:
+            invisibility_filter = torch.logical_not(visibility_filter)
+            selected_pts_mask = torch.logical_or(selected_pts_mask, invisibility_filter)
+            print("Clone invisible points:", invisibility_filter.sum().item(), "out of", invisibility_filter.shape[0])
+            print("Total points cloned:", selected_pts_mask.sum().item(), "out of", selected_pts_mask.shape[0])
+        # -----------------------------------------------------------------------------
         
+        # new_xyz = torch.tensor(np.random.random((selected_pts_mask.sum().item(), 3)), device="cuda").float()
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
@@ -714,20 +779,27 @@ class GaussianModel:
         new_rotation = self._rotation[selected_pts_mask]
         if self.binding is not None:
             # Toyota Motor Europe NV/SA and its affiliated companies retain all intellectual property and proprietary rights in and to the following code lines and related documentation. Any commercial use, reproduction, disclosure or distribution of these code lines and related documentation without an express license agreement from Toyota Motor Europe NV/SA is strictly prohibited.
-            new_binding = self.binding[selected_pts_mask]
+            new_binding = self.binding[selected_pts_mask].to(dtype=torch.int64) # LM3D : to int64
             self.binding = torch.cat((self.binding, new_binding))
             self.binding_counter.scatter_add_(0, new_binding, torch.ones_like(new_binding, dtype=torch.int32, device="cuda"))
         
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, visibility_filter=None):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
+        self.densify_and_clone(grads, max_grad, extent, visibility_filter)
         self.densify_and_split(grads, max_grad, extent)
 
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        # Prune masks
+        # scaling_mask = ((self.get_scaling < 0.0010).sum(dim=1) >= 1).squeeze()
+        # print("SCALING MASK SUM",scaling_mask.sum())
+
+        opacity_mask = (self.get_opacity < min_opacity).squeeze()
+
+        prune_mask = opacity_mask
+
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent

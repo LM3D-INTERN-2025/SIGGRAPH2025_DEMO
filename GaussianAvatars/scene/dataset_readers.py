@@ -40,6 +40,7 @@ class CameraInfo(NamedTuple):
     bg: np.array = np.array([0, 0, 0])
     timestep: Optional[int] = None
     camera_id: Optional[int] = None
+    fg_mask_path: Optional[str] = None # LM3D : path to foreground mask
 
 class SceneInfo(NamedTuple):
     train_cameras: list
@@ -199,6 +200,12 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         frames = contents["frames"]
         for idx, frame in tqdm(enumerate(frames), total=len(frames)):
             file_path = frame["file_path"]
+
+            # LM3D : fg_mask_path -------------------------
+            fg_mask_path = frame["fg_mask_path"]
+            fg_mask_path = os.path.join(path, fg_mask_path)
+            # ---------------------------------------------
+
             if extension not in frame["file_path"]:
                 file_path += extension
             cam_name = os.path.join(path, file_path)
@@ -252,7 +259,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             
             cam_infos.append(CameraInfo(
                 uid=idx, R=R, T=T, FovY=fovy, FovX=fovx, cx=cx, cy=cy, bg=bg, image=image, 
-                image_path=image_path, image_name=image_name, 
+                image_path=image_path, fg_mask_path=fg_mask_path, image_name=image_name, 
                 width=width, height=height, 
                 timestep=timestep, camera_id=camera_id))
     return cam_infos

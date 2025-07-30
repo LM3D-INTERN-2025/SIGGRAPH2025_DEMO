@@ -17,7 +17,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, cx, cy, FoVx, FoVy, bg, image_width, image, image_height, image_path,
                  image_name, uid, trans=np.array([0.0, 0.0, 0.0]), scale=1.0, 
-                 timestep=None, data_device = "cuda"
+                 timestep=None, data_device = "cuda", fg_mask_path=None,
                  ):
         super(Camera, self).__init__()
 
@@ -32,6 +32,9 @@ class Camera(nn.Module):
         self.image_width = image_width
         self.image_height = image_height
         self.image_path = image_path
+
+        self.fg_mask_path = fg_mask_path # LM3D : path to foreground mask
+
         self.image_name = image_name
         self.timestep = timestep
 

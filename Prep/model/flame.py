@@ -17,30 +17,33 @@
 # Contact: ps-license@tuebingen.mpg.de
 
 
-from .lbs import lbs, vertices2landmarks, blend_shapes, vertices2joints
+from model.lbs import lbs, vertices2landmarks, blend_shapes, vertices2joints
+from utils.mesh import face_vertices
+from utils.log import get_logger
+from pytorch3d.io import load_obj
+from pytorch3d.structures.meshes import Meshes
+from matplotlib import cm
 
-from pathlib import Path
-from PIL import Image
-import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import numpy as np
 import pickle
+import torch.nn.functional as F
 from collections import defaultdict
-try:
-    from pytorch3d.io import load_obj
-except ImportError:
-    from utils.pytorch3d_load_obj import load_obj
+from PIL import Image
 
-FLAME_MESH_PATH = "flame_model/assets/flame/head_template_mesh.obj"
-FLAME_LMK_PATH = "flame_model/assets/flame/landmark_embedding_with_eyes.npy"
-# FLAME_PAINTED_TEX_PATH = "/mnt/nas/pim/diffuse_albedo2.png"
-# FLAME_PAINTED_TEX_PATH = "/mnt/nas/pim/output2/woman1_seq1_v12_filter_v25_test_texture/point_cloud/iteration_2000/flame_texture.png"
-FLAME_PAINTED_TEX_PATH = Path("/home/pim/GaussianAvatars/flame_model/assets/flame/tex_mean_painted.png")
-# to be downloaded from https://flame.is.tue.mpg.de/download.php
-# FLAME_MODEL_PATH = "flame_model/assets/flame/generic_model.pkl"  # FLAME 2020
-FLAME_MODEL_PATH = "flame_model/assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)
-FLAME_PARTS_PATH = "flame_model/assets/flame/FLAME_masks.pkl" # FLAME Vertex Masks
+logger = get_logger(__name__)
+
+# FLAME_MODEL_PATH = "Prep/asset/flame/generic_model.pkl"
+FLAME_MODEL_PATH = "Prep/asset/flame/flame2023.pkl"
+FLAME_MESH_PATH = "Prep/asset/flame/head_template_mesh.obj"
+FLAME_PARTS_PATH = "Prep/asset/flame/FLAME_masks.pkl"
+FLAME_LMK_PATH = "Prep/asset/flame/landmark_embedding_with_eyes.npy"
+FLAME_TEX_PATH = "Prep/asset/flame/FLAME_texture.npz"
+# FLAME_PAINTED_TEX_PATH = "Prep/asset/flame/tex_mean_painted.png"
+FLAME_PAINTED_TEX_PATH = "/mnt/nas/sitt/demo/VHAPv2/lumio_flame/shu_texture.jpg"
+FLAME_UVMASK_PATH = "Prep/asset/flame/uv_masks.npz"
+
 
 def to_tensor(array, dtype=torch.float32):
     if "torch.tensor" not in str(type(array)):
@@ -58,26 +61,6 @@ class Struct(object):
         for key, val in kwargs.items():
             setattr(self, key, val)
 
-def face_vertices(vertices, faces):
-    """
-    :param vertices: [batch size, number of vertices, 3]
-    :param faces: [batch size, number of faces, 3]
-    :return: [batch size, number of faces, 3, 3]
-    """
-    assert vertices.ndimension() == 3
-    assert faces.ndimension() == 3
-    assert vertices.shape[0] == faces.shape[0]
-    assert vertices.shape[2] == 3
-    assert faces.shape[2] == 3
-
-    bs, nv = vertices.shape[:2]
-    bs, nf = faces.shape[:2]
-    device = vertices.device
-    faces = faces + (torch.arange(bs, dtype=torch.int32).to(device) * nv)[:, None, None]
-    vertices = vertices.reshape((bs * nv, 3))
-    # pytorch only supports long and byte tensors for indexing
-    return vertices[faces.long()]
-
 
 class FlameHead(nn.Module):
     """
@@ -92,11 +75,18 @@ class FlameHead(nn.Module):
         flame_model_path=FLAME_MODEL_PATH,
         flame_lmk_embedding_path=FLAME_LMK_PATH,
         flame_template_mesh_path=FLAME_MESH_PATH,
-        painted_tex_path=FLAME_PAINTED_TEX_PATH,
         include_mask=True,
-        add_teeth=True,
+        include_lbs_color=False,
+        add_teeth=False,
+        connect_lip_inside=False,
+        remove_lip_inside=False,
+        disable_deformation_on_torso=False,
+        remove_torso=False,
+        face_clusters=[],
     ):
         super().__init__()
+
+        logger.info("Initializing FLAME mesh model...")
 
         self.n_shape_params = shape_params
         self.n_expr_params = expr_params
@@ -162,23 +152,6 @@ class FlameHead(nn.Module):
         vertex_uvs = aux.verts_uvs
         face_uvs_idx = faces.textures_idx  # index into verts_uvs
 
-        self.tex_size = 2048
-        painted_tex_path = Path(painted_tex_path)
-        tex_painted = torch.tensor(np.array(Image.open(painted_tex_path))[:, :, :3]) / 255
-        tex_painted = tex_painted[None, ...].permute(0, 3, 1, 2)
-        if tex_painted.shape[-1] != self.tex_size or tex_painted.shape[-2] != self.tex_size:
-            tex_painted = F.interpolate(tex_painted, [self.tex_size, self.tex_size])
-        # self.register_buffer("_tex_painted", tex_painted)
-        # tex_painted = torch.zeros_like(tex_painted)
-        self._tex_painted = nn.Parameter(tex_painted.requires_grad_(True))
-        self.input_texture = tex_painted.clone()
-        alpha_tex_path = painted_tex_path.parent / "flame_texture_alpha.png"
-        if alpha_tex_path.exists():
-            tex_alpha = torch.tensor(np.array(Image.open(alpha_tex_path))[:, :, :3]) / 255
-            tex_alpha = tex_alpha[None, ...].permute(0, 3, 1, 2)
-            self._tex_alpha = nn.Parameter(tex_alpha[:,0:1,:,:].requires_grad_(True))
-        else:
-            self._tex_alpha = nn.Parameter(torch.zeros_like(tex_painted[:,0:1,:,:]).requires_grad_(True))
         # create uvcoords per face --> this is what you can use for uv map rendering
         # range from -1 to 1 (-1, -1) = left top; (+1, +1) = right bottom
         # pad 1 to the end
@@ -190,22 +163,47 @@ class FlameHead(nn.Module):
         face_uv_coords = face_vertices(vertex_uvs[None], face_uvs_idx[None])[0]
         self.register_buffer("face_uvcoords", face_uv_coords, persistent=False)
         self.register_buffer("faces", faces.verts_idx, persistent=False)
-        # self.register_buffer("_tex_painted", self._tex_painted)
+
         self.register_buffer("verts_uvs", aux.verts_uvs, persistent=False)
         self.register_buffer("textures_idx", faces.textures_idx, persistent=False)
-        # Check our template mesh faces match those of FLAME:
-        assert (self.faces==torch.from_numpy(flame_model.f.astype('int64'))).all()
+
         if include_mask:
             self.mask = FlameMask(
                 faces=self.faces, 
                 faces_t=self.textures_idx,
                 num_verts=self.v_template.shape[0], 
                 num_faces=self.faces.shape[0], 
+                face_clusters=face_clusters,
             )
 
         if add_teeth:
             self.add_teeth()
         
+        if connect_lip_inside:
+            self.connect_lip_inside()
+        
+        if remove_lip_inside:
+            # this will change faces indices, so landmarks will be wrong if landmark embeddings are not updated
+            self.remove_lip_inside()
+
+        if remove_torso:
+            # this will change faces indices, so landmarks will be wrong if landmark embeddings are not updated
+            self.remove_torso()
+        
+        if disable_deformation_on_torso:
+            self.disable_deformation_on_torso(expr_params)
+        
+        # laplacian matrix
+        laplacian_matrix = Meshes(verts=[self.v_template], faces=[faces.verts_idx]).laplacian_packed().to_dense()
+        self.register_buffer("laplacian_matrix", laplacian_matrix, persistent=False)
+
+        D = torch.diag(laplacian_matrix)
+        laplacian_matrix_negate_diag = laplacian_matrix - torch.diag(D) * 2
+        self.register_buffer("laplacian_matrix_negate_diag", laplacian_matrix_negate_diag, persistent=False)
+
+        if include_lbs_color:
+            self.add_lbs_color()
+    
     def add_teeth(self):
         # get reference vertices from lips
         vid_lip_outside_ring_upper = self.mask.get_vid_by_region(['lip_outside_ring_upper'], keep_order=True)
@@ -503,7 +501,73 @@ class FlameHead(nn.Module):
         self.faces = torch.cat([self.faces, f_teeth_upper+num_verts_orig, f_teeth_lower+num_verts_orig], dim=0)
         self.textures_idx = torch.cat([self.textures_idx, f_teeth_upper+num_verts_uv_orig, f_teeth_lower+num_verts_uv_orig], dim=0)
 
+        self.mask.num_verts = self.v_template.shape[0]
         self.mask.update(self.faces, self.textures_idx)
+
+    
+    def connect_lip_inside(self):
+        f_lip_connect = torch.tensor([
+            [1594, 1595, 1572],  #0
+            [1595, 1746, 1572],  #1
+            [1572, 1746, 1573],  #2
+            [1746, 1747, 1573],  #3
+            [1573, 1747, 1860],  #4
+            [1747, 1742, 1860],  #5
+            [1860, 1742, 1862],  #6
+            [1742, 1739, 1862],  #7
+            [1862, 1739, 1830],  #8
+            [1739, 1665, 1830],  #9
+            [1830, 1665, 1835],  #10
+            [1665, 1666, 1835],  #11
+            [1835, 1666, 1852],  #12
+            [1666, 3514, 1852],  #13
+            [1852, 3514, 3497],  #14
+            [3497, 3514, 2941],  #15
+            [3514, 2783, 2941],  #16
+            [2941, 2783, 2933],  #17
+            [2783, 2782, 2933],  #18
+            [2933, 2782, 2930],  #19
+            [2782, 2854, 2930],  #20
+            [2930, 2854, 2945],  #21
+            [2854, 2857, 2945],  #22
+            [2945, 2857, 2943],  #23
+            [2857, 2862, 2943],  #24
+            [2943, 2862, 2709],  #25
+            [2862, 2861, 2709],  #26
+            [2709, 2861, 2708],  #27
+            [2861, 2731, 2708],  #28
+            [2731, 2730, 2708],  #29
+        ])
+        self.faces = torch.cat([self.faces, f_lip_connect], dim=0)
+
+        self.mask.update(self.faces)
+    
+    def remove_lip_inside(self):
+        fid = self.mask.get_fid_except_region(['lip_inside'])
+        self.faces = self.faces[fid]
+        self.textures_idx = self.textures_idx[fid]
+        self.mask.update(self.faces, self.textures_idx)
+    
+    def remove_torso(self):
+        fid = self.mask.get_fid_except_region(['boundary'])
+        self.faces = self.faces[fid]
+        # self.textures_idx = self.textures_idx[fid]  # TODO: have to update textures_idx for connect_lip_inside before enabling this
+        self.mask.update(self.faces, self.textures_idx)
+
+    def disable_deformation_on_torso(self, n_expr):
+        vid = self.mask.get_vid_by_region(['boundary', 'neck_lower'])
+        self.shapedirs[vid, -n_expr:] = 0
+
+        vid = self.mask.get_vid_by_region(['boundary'])
+        self.lbs_weights[vid, -3:] = 0
+    
+    def add_lbs_color(self):
+        num_joints = self.lbs_weights.shape[1]
+        color_indices = np.array(range(num_joints))
+        cmap = cm.get_cmap("Set1")
+        colors = cmap(color_indices)[:, :3]  # (num_joints, 3)
+        lbs_color = self.lbs_weights @ colors
+        self.register_buffer("lbs_color", lbs_color.float(), persistent=False)
 
     def forward(
         self,
@@ -541,6 +605,8 @@ class FlameHead(nn.Module):
         # Add personal offsets
         if static_offset is not None:
             v_shaped += static_offset
+        if dynamic_offset is not None:
+            v_shaped += dynamic_offset
 
         vertices, J, mat_rot = lbs(
             full_pose,
@@ -580,6 +646,48 @@ class FlameHead(nn.Module):
         else:
             return ret_vals[0]
 
+
+class FlameTexPainted(nn.Module):
+    def __init__(self, tex_size=512, painted_tex_path=FLAME_PAINTED_TEX_PATH):
+        super().__init__()
+        logger.info("Initializing FLAME painted texture model...")
+        self.tex_size = tex_size
+
+        tex_painted = torch.tensor(np.array(Image.open(painted_tex_path))[:, :, :3]) / 255
+        tex_painted = tex_painted[None, ...].permute(0, 3, 1, 2)
+        if tex_painted.shape[-1] != self.tex_size or tex_painted.shape[-2] != self.tex_size:
+            tex_painted = F.interpolate(tex_painted, [self.tex_size, self.tex_size])
+        self.register_buffer("tex_painted", tex_painted)
+
+    def forward(self):
+        return self.tex_painted
+    
+
+class FlameTexPCA(nn.Module):
+    def __init__(self, tex_params, tex_size=512, tex_space_path=FLAME_TEX_PATH):
+        super().__init__()
+        logger.info("Initializing FLAME PCA texture model...")
+        self.tex_size = tex_size
+        tex_params = tex_params
+        tex_space = np.load(tex_space_path)
+        texture_mean = tex_space["mean"].reshape(1, -1)
+        texture_basis = tex_space["tex_dir"].reshape(-1, 200)
+        texture_mean = torch.from_numpy(texture_mean).float()[None, ...]
+        texture_basis = torch.from_numpy(texture_basis[:, :tex_params]).float()[
+            None, ...
+        ]
+        self.register_buffer("texture_mean", texture_mean)
+        self.register_buffer("texture_basis", texture_basis)
+
+    def forward(self, texcode):
+        texture = self.texture_mean + (self.texture_basis * texcode[:, None, :]).sum(-1)
+        texture = texture.reshape(texcode.shape[0], 512, 512, 3).permute(0, 3, 1, 2)
+        texture = F.interpolate(texture, [self.tex_size, self.tex_size])
+        texture = texture[:, [2, 1, 0], :, :]
+        texture = texture / 255.0
+        return texture.clamp(0, 1)
+    
+
 class BufferContainer(nn.Module):
     def __init__(self):
         super().__init__()
@@ -600,6 +708,7 @@ class BufferContainer(nn.Module):
     def items(self):
         return [(name, buf) for name, buf in self.named_buffers()]
     
+
 class FlameMask(nn.Module):
     def __init__(
             self, 
@@ -647,6 +756,7 @@ class FlameMask(nn.Module):
 
     def process_vertex_mask(self, flame_parts_path):
         """Load the vertex masks from the FLAME model and add custom masks"""
+        logger.info("Processing vertex masks for FLAME...")
 
         part_masks = np.load(flame_parts_path, allow_pickle=True, encoding="latin1")
         """ Available part masks from the FLAME model: 
@@ -739,14 +849,6 @@ class FlameMask(nn.Module):
             ])
         )
 
-        # the bottomline of "neck"
-        self.v.register_buffer(
-            "neck_base", 
-            torch.tensor([
-                3231, 3232, 3237, 3238, 3240, 3242, 3243, 3251, 3263, 3290, 3332, 3333, 3338, 3339, 3341, 3343, 3344, 3350, 3362,  # 4-th ring from bottom (drop 7 front verts)
-            ])
-        )
-
         # As a subset of "boundary", "bottomline" only contains vertices on the edge
         self.v.register_buffer(
             "bottomline", 
@@ -769,7 +871,6 @@ class FlameMask(nn.Module):
             ])
         )
 
-        # inside eye ball = 3929, 3930
         self.v.register_buffer(
             "left_eyelid",  # 30 vertices
             torch.tensor([
@@ -804,26 +905,6 @@ class FlameMask(nn.Module):
                 19, 20, 21, 22, 23, 24, 25, 26, 109, 110, 111, 112, 219, 220, 221, 222, 335, 336, 337, 338, 522, 523, 524, 525, 526, 527, 528, 529, 534, 535, 536, 537, 554, 555, 556, 557, 584, 585, 586, 587, 595, 596, 597, 598, 599, 600, 601, 602, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 634, 635, 636, 637, 640, 641, 642, 643, 651, 652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 675, 676, 677, 678, 684, 685, 686, 687, 689, 690, 698, 699, 700, 701, 710, 711, 716, 717, 718, 719, 720, 721, 722, 741, 742, 743, 744, 749, 750, 751, 752, 776, 777, 778, 779, 780, 781, 782, 787, 788, 789, 790, 791, 792, 793, 794, 800, 801, 810, 811, 812, 813, 817, 818, 819, 820, 830, 831, 832, 833, 834, 835, 836, 839, 843, 844, 845, 849, 850, 851, 852, 853, 854, 855, 856, 857, 858, 859, 860, 861, 862, 863, 866, 867, 868, 869, 870, 871, 872, 873, 874, 875, 876, 886, 887, 888, 889, 890, 891, 892, 893, 894, 895, 900, 901, 910, 911, 912, 913, 914, 915, 916, 917, 920, 921, 925, 930, 931, 932, 933, 934, 935, 936, 937, 938, 940, 941, 956, 957, 973, 974, 975, 976, 981, 982, 983, 984, 987, 988, 989, 990, 996, 997, 998, 1004, 1005, 1009, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1047, 1048, 1049, 1050, 1051, 1052, 1053, 1054, 1055, 1056, 1057, 1058, 1066, 1067, 1069, 1070, 1071, 1072, 1073, 1074, 1076, 1077, 1078, 1079, 1080, 1081, 1082, 1083, 1084, 1089, 1090, 1091, 1094, 1095, 1097, 1098, 1099, 1100, 1102, 1103, 1104, 1105, 1106, 1107, 1109, 1110, 1111, 1112, 1118, 1119, 1120, 1121, 1122, 1123, 1124, 1130, 1131, 1133, 1136, 1137, 1138, 1139, 1140, 1141, 1145, 1148, 1149, 1156, 1157, 1158, 1159, 1160, 1165, 1166, 1167, 1171, 1172, 1173, 1174, 1177, 1178, 1179, 1180, 1185, 1186, 1187, 1188, 1191, 1192, 1196, 1197, 1198, 1199, 1203, 1204, 1205, 1206, 1207, 1208, 1209, 1210, 1211, 1212, 1213, 1214, 1215, 1219, 1220, 1221, 1222, 1223, 1231, 1234, 1235, 1236, 1237, 1238, 1239, 1240, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1259, 1260, 1261, 1262, 1263, 1264, 1265, 1266, 1267, 1268, 1269, 1270, 1271, 1272, 1273, 1274, 1275, 1276, 1277, 1278, 1279, 1280, 1281, 1282, 1285, 1286, 1288, 1290, 1291, 1295, 1296, 1297, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1310, 1311, 1312, 1313, 1314, 1315, 1316, 1317, 1318, 1319, 1327, 1328, 1330, 1332, 1333, 1334, 1335, 1359, 1360, 1379, 1380, 1381, 1382, 1392, 1393, 1394, 1395, 1406, 1407, 1408, 1409, 1488, 1613, 1614, 1615, 1616, 1619, 1620, 1621, 1622, 1627, 1628, 1629, 1630, 1631, 1632, 1633, 1634, 1635, 1636, 1637, 1726, 1727, 1752, 1753, 1754, 1755, 1760, 1761, 1762, 1772, 1783, 1784, 1785, 1786, 1822, 1828, 1829, 1833, 1834, 1837, 1838, 1839, 1840, 1841, 1842, 1843, 1844, 1845, 1853, 1855, 1856, 1857, 1858, 1859, 1870, 1882, 1883, 1884, 1885, 1912, 1913, 1916, 1929, 1930, 1931, 1932, 1933, 1934, 1935, 1936, 1937, 1940, 1941, 1960, 1961, 1962, 1963, 1982, 1983, 1984, 1985, 2000, 2001, 2002, 2003, 2005, 2006, 2007, 2008, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2027, 2028, 2031, 2032, 2036, 2084, 2085, 2086, 2087, 2088, 2089, 2090, 2091, 2123, 2124, 2128, 2129, 2130, 2131, 2132, 2133, 2144, 2145, 2146, 2147, 2149, 2150, 2151, 2165, 2166, 2167, 2168, 2176, 2177, 2178, 2179, 2180, 2181, 2182, 2183, 2184, 2185, 2186, 2187, 2188, 2189, 2190, 2191, 2192, 2193, 2194, 2195, 2196, 2197, 2198, 2199, 2200, 2201, 2202, 2203, 2204, 2205, 2206, 2207, 2208, 2209, 2210, 2211, 2212, 2213, 2214, 2215, 2216, 2217, 2218, 2219, 2220, 2221, 2222, 2223, 2224, 2225, 2226, 2227, 2228, 2229, 2230, 2231, 2232, 2233, 2234, 2235, 2236, 2237, 2238, 2239, 2240, 2241, 2242, 2243, 2244, 2245, 2246, 2247, 2248, 2249, 2250, 2251, 2252, 2253, 2254, 2255, 2256, 2257, 2258, 2259, 2260, 2261, 2262, 2263, 2264, 2265, 2266, 2267, 2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278, 2279, 2280, 2281, 2282, 2283, 2284, 2285, 2286, 2287, 2288, 2289, 2290, 2291, 2292, 2293, 2294, 2295, 2296, 2297, 2298, 2299, 2300, 2301, 2302, 2303, 2304, 2305, 2306, 2307, 2308, 2309, 2310, 2311, 2312, 2313, 2314, 2315, 2316, 2317, 2318, 2319, 2320, 2321, 2322, 2323, 2324, 2325, 2326, 2327, 2328, 2329, 2330, 2331, 2332, 2333, 2334, 2335, 2336, 2337, 2338, 2339, 2340, 2341, 2342, 2343, 2344, 2345, 2346, 2347, 2348, 2349, 2350, 2351, 2352, 2353, 2354, 2355, 2356, 2357, 2358, 2359, 2360, 2361, 2362, 2363, 2364, 2365, 2366, 2367, 2368, 2369, 2370, 2371, 2372, 2373, 2374, 2375, 2376, 2377, 2378, 2379, 2380, 2381, 2382, 2383, 2384, 2385, 2386, 2387, 2388, 2389, 2390, 2391, 2392, 2393, 2394, 2395, 2396, 2397, 2398, 2399, 2400, 2401, 2402, 2403, 2404, 2405, 2406, 2407, 2408, 2409, 2410, 2411, 2412, 2413, 2414, 2415, 2416, 2417, 2418, 2419, 2420, 2421, 2422, 2423, 2424, 2425, 2426, 2427, 2428, 2429, 2430, 2431, 2432, 2433, 2434, 2435, 2436, 2437, 2438, 2439, 2440, 2441, 2442, 2443, 2444, 2445, 2446, 2447, 2448, 2449, 2450, 2451, 2452, 2453, 2454, 2455, 2456, 2457, 2458, 2459, 2460, 2461, 2462, 2463, 2464, 2465, 2466, 2467, 2468, 2469, 2470, 2471, 2472, 2473, 2474, 2475, 2476, 2477, 2478, 2479, 2480, 2481, 2482, 2483, 2484, 2485, 2486, 2487, 2488, 2489, 2490, 2491, 2492, 2493, 2494, 2495, 2496, 2497, 2498, 2499, 2500, 2501, 2502, 2503, 2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515, 2516, 2517, 2518, 2519, 2520, 2521, 2522, 2523, 2524, 2525, 2526, 2527, 2528, 2529, 2530, 2531, 2532, 2533, 2534, 2535, 2536, 2537, 2538, 2539, 2540, 2541, 2542, 2543, 2544, 2545, 2546, 2547, 2548, 2549, 2550, 2551, 2552, 2553, 2554, 2555, 2556, 2557, 2558, 2559, 2560, 2561, 2562, 2563, 2564, 2565, 2566, 2567, 2568, 2569, 2570, 2571, 2572, 2573, 2574, 2575, 2576, 2577, 2578, 2579, 2580, 2581, 2582, 2583, 2584, 2585, 2586, 2587, 2588, 2589, 2590, 2591, 2592, 2593, 2594, 2595, 2596, 2597, 2598, 2599, 2600, 2601, 2602, 2603, 2604, 2605, 2606, 2607, 2608, 2609, 2610, 2611, 2612, 2613, 2614, 2615, 2616, 2617, 2618, 2619, 2620, 2621, 2622, 2623, 2624, 2625, 2626, 2627, 2628, 2629, 2630, 2631, 2632, 2633, 2634, 2635, 2636, 2637, 2638, 2639, 2640, 2641, 2642, 2643, 2644, 2645, 2646, 2647, 2648, 2649, 2650, 2651, 2652, 2653, 2654, 2655, 2656, 2657, 2658, 2659, 2660, 2661, 2662, 2663, 2664, 2665, 2666, 2667, 2668, 2669, 2670, 2671, 2672, 2673, 2674, 2675, 2676, 2677, 2678, 2679, 2680, 2681, 2682, 2683, 2684, 2685, 2686, 2687, 2688, 2689, 2690, 2691, 2692, 2693, 2694, 2695, 2696, 2697, 2698, 2699, 2700, 2701, 2702, 2703, 2704, 2705, 2706, 2707, 2708, 2709, 2710, 2711, 2712, 2713, 2714, 2715, 2716, 2717, 2718, 2719, 2720, 2721, 2722, 2723, 2724, 2725, 2726, 2727, 2728, 2729, 2730, 2731, 2732, 2733, 2734, 2735, 2736, 2737, 2738, 2739, 2740, 2741, 2742, 2743, 2744, 2745, 2746, 2747, 2748, 2749, 2750, 2751, 2752, 2753, 2754, 2755, 2756, 2757, 2758, 2759, 2760, 2761, 2762, 2763, 2764, 2765, 2766, 2767, 2768, 2769, 2770, 2771, 2772, 2773, 2774, 2775, 2776, 2777, 2778, 2779, 2780, 2781, 2782, 2783, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793, 2794, 2795, 2796, 2797, 2798, 2799, 2800, 2801, 2802, 2803, 2804, 2805, 2806, 2807, 2808, 2809, 2810, 2811, 2812, 2813, 2814, 2815, 2816, 2817, 2818, 2819, 2820, 2821, 2822, 2823, 2824, 2825, 2826, 2827, 2828, 2829, 2830, 2831, 2832, 2833, 2834, 2835, 2836, 2837, 2838, 2839, 2840, 2841, 2842, 2843, 2844, 2845, 2846, 2847, 2848, 2849, 2850, 2851, 2852, 2853, 2854, 2855, 2856, 2857, 2858, 2859, 2860, 2861, 2862, 2863, 2864, 2865, 2866, 2867, 2868, 2869, 2870, 2871, 2872, 2873, 2874, 2875, 2876, 2877, 2878, 2879, 2880, 2881, 2882, 2883, 2884, 2885, 2886, 2887, 2888, 2889, 2890, 2891, 2892, 2893, 2894, 2895, 2896, 2897, 2898, 2899, 2900, 2901, 2902, 2903, 2904, 2905, 2906, 2907, 2908, 2909, 2910, 2911, 2912, 2913, 2914, 2915, 2916, 2917, 2918, 2919, 2920, 2921, 2922, 2923, 2924, 2925, 2926, 2927, 2928, 2929, 2930, 2931, 2932, 2933, 2934, 2935, 2936, 2937, 2938, 2939, 2940, 2941, 2942, 2943, 2944, 2945, 2946, 2947, 2948, 2949, 2950, 2951, 2952, 2953, 2954, 2955, 2956, 2957, 2958, 2959, 2960, 2961, 2962, 2963, 2964, 2965, 2966, 2967, 2968, 2969, 2970, 2971, 2972, 2973, 2974, 2975, 2976, 2977, 2978, 2979, 2980, 2981, 2982, 2983, 2984, 2985, 2986, 2987, 2988, 2989, 2990, 2991, 2992, 2993, 2994, 2995, 2996, 2997, 2998, 2999, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3025, 3026, 3027, 3028, 3029, 3030, 3031, 3032, 3033, 3034, 3035, 3036, 3037, 3038, 3039, 3040, 3041, 3042, 3043, 3044, 3045, 3046, 3047, 3048, 3049, 3050, 3051, 3052, 3053, 3054, 3055, 3056, 3057, 3058, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3070, 3071, 3072, 3073, 3074, 3075, 3076, 3077, 3078, 3079, 3080, 3081, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3092, 3093, 3094, 3095, 3096, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108, 3109, 3110, 3111, 3112, 3113, 3114, 3115, 3116, 3117, 3118, 3119, 3120, 3121, 3122, 3123, 3124, 3125, 3126, 3127, 3128, 3129, 3130, 3131, 3132, 3133, 3134, 3135, 3136, 3137, 3138, 3139, 3140, 3141, 3142, 3143, 3144, 3145, 3146, 3147, 3148, 3149, 3150, 3151, 3152, 3153, 3154, 3155, 3156, 3157, 3158, 3159, 3160, 3161, 3162, 3163, 3164, 3165, 3166, 3167, 3168, 3169, 3170, 3171, 3172, 3173, 3174, 3175, 3176, 3177, 3178, 3179, 3180, 3181, 3182, 3183, 3184, 3185, 3222, 3223, 3248, 3249, 3275, 3276, 3277, 3278, 3281, 3282, 3283, 3284, 3285, 3290, 3291, 3292, 3293, 3294, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3305, 3306, 3307, 3308, 3309, 3310, 3311, 3312, 3313, 3314, 3315, 3316, 3317, 3318, 3319, 3320, 3321, 3322, 3323, 3324, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3342, 3343, 3344, 3345, 3346, 3347, 3348, 3349, 3350, 3351, 3352, 3353, 3354, 3355, 3356, 3357, 3358, 3359, 3360, 3361, 3362, 3363, 3364, 3365, 3366, 3367, 3368, 3369, 3370, 3371, 3372, 3373, 3374, 3375, 3376, 3377, 3378, 3379, 3380, 3381, 3382, 3383, 3384, 3385, 3386, 3387, 3388, 3389, 3390, 3391, 3392, 3393, 3394, 3395, 3396, 3397, 3398, 3399, 3400, 3401, 3402, 3403, 3404, 3405, 3406, 3407, 3408, 3409, 3410, 3411, 3412, 3413, 3414, 3415, 3416, 3417, 3418, 3419, 3420, 3421, 3422, 3423, 3424, 3425, 3426, 3427, 3428, 3429, 3430, 3431, 3432, 3433, 3434, 3435, 3436, 3437, 3438, 3439, 3440, 3441, 3442, 3443, 3444, 3445, 3446, 3447, 3448, 3449, 3450, 3451, 3452, 3453, 3454, 3455, 3456, 3457, 3458, 3459, 3460, 3461, 3462, 3463, 3464, 3465, 3466, 3467, 3468, 3469, 3470, 3471, 3472, 3473, 3474, 3475, 3476, 3477, 3478, 3479, 3480, 3481, 3482, 3483, 3484, 3485, 3486, 3487, 3488, 3489, 3490, 3491, 3492, 3493, 3494, 3495, 3496, 3497, 3498, 3499, 3500, 3501, 3502, 3503, 3504, 3505, 3506, 3507, 3508, 3509, 3510, 3511, 3512, 3513, 3514, 3515, 3516, 3517, 3518, 3519, 3520, 3521, 3522, 3523, 3524, 3525, 3526, 3527, 3528, 3529, 3530, 3531, 3532, 3533, 3534, 3535, 3536, 3537, 3538, 3539, 3540, 3541, 3542, 3543, 3544, 3545, 3546, 3547, 3548, 3549, 3550, 3551, 3552, 3553, 3554, 3555, 3556, 3557, 3558, 3559, 3560, 3561, 3562, 3563, 3564, 3565, 3566, 3567, 3568, 3569, 3570, 3571, 3572, 3573, 3574, 3575, 3585, 3586, 3589, 3590, 3591, 3592, 3597, 3602, 3603, 3606, 3607, 3608, 3609, 3610, 3612, 3613, 3615, 3616, 3617, 3618, 3619, 3620, 3621, 3622, 3627, 3631, 3632, 3633, 3638, 3639, 3640, 3641, 3642, 3645, 3647, 3648, 3651, 3657, 3661, 3668, 3669, 3674, 3675, 3682, 3683, 3684, 3686, 3687, 3688, 3689, 3690, 3692, 3694, 3696, 3699, 3700, 3702, 3704, 3705, 3706, 3708, 3710, 3711, 3712, 3718, 3719, 3720, 3721, 3723, 3729, 3731, 3732, 3733, 3735, 3736, 3741, 3743, 3744, 3746, 3747, 3748, 3749, 3750, 3751, 3755, 3758, 3759, 3763, 3764, 3765, 3766, 3767, 3768, 3770, 3773, 3774, 3775, 3776, 3777, 3778, 3779, 3780, 3781, 3782, 3783, 3784, 3785, 3786, 3787, 3788, 3789, 3790, 3791, 3792, 3793, 3794, 3795, 3796, 3797, 3798, 3799, 3800, 3801, 3802, 3803, 3804, 3805, 3806, 3930, 4477, 4478, 4479, 4480, 4481, 4482, 4483, 4484, 4485, 4486, 4487, 4488, 4489, 4490, 4491, 4492, 4493, 4494, 4495, 4496, 4497, 4498, 4499, 4500, 4501, 4502, 4503, 4504, 4505, 4506, 4507, 4508, 4509, 4510, 4511, 4512, 4513, 4514, 4515, 4516, 4517, 4518, 4519, 4520, 4521, 4522, 4523, 4524, 4525, 4526, 4527, 4528, 4529, 4530, 4531, 4532, 4533, 4534, 4535, 4536, 4537, 4538, 4539, 4540, 4541, 4542, 4543, 4544, 4545, 4546, 4547, 4548, 4549, 4550, 4551, 4552, 4553, 4554, 4555, 4556, 4557, 4558, 4559, 4560, 4561, 4562, 4563, 4564, 4565, 4566, 4567, 4568, 4569, 4570, 4571, 4572, 4573, 4574, 4575, 4576, 4577, 4578, 4579, 4580, 4581, 4582, 4583, 4584, 4585, 4586, 4587, 4588, 4589, 4590, 4591, 4592, 4593, 4594, 4595, 4596, 4597, 4598, 4599, 4600, 4601, 4602, 4603, 4604, 4605, 4606, 4607, 4608, 4609, 4610, 4611, 4612, 4613, 4614, 4615, 4616, 4617, 4618, 4619, 4620, 4621, 4622, 4623, 4624, 4625, 4626, 4627, 4628, 4629, 4630, 4631, 4632, 4633, 4634, 4635, 4636, 4637, 4638, 4639, 4640, 4641, 4642, 4643, 4644, 4645, 4646, 4647, 4648, 4649, 4650, 4651, 4652, 4653, 4654, 4655, 4656, 4657, 4658, 4659, 4660, 4661, 4662, 4663, 4664, 4665, 4666, 4667, 4668, 4669, 4670, 4671, 4672, 4673, 4674, 4675, 4676, 4677, 4678, 4679, 4680, 4681, 4682, 4683, 4684, 4685, 4686, 4687, 4688, 4689, 4690, 4691, 4692, 4693, 4694, 4695, 4696, 4697, 4698, 4699, 4700, 4701, 4702, 4703, 4704, 4705, 4706, 4707, 4708, 4709, 4710, 4711, 4712, 4713, 4714, 4715, 4716, 4717, 4718, 4719, 4720, 4721, 4722, 4723, 4724, 4725, 4726, 4727, 4728, 4729, 4730, 4731, 4732, 4733, 4734, 4735, 4736, 4737, 4738, 4739, 4740, 4741, 4742, 4743, 4744, 4745, 4746, 4747, 4748, 4749, 4750, 4751, 4752, 4753, 4754, 4755, 4756, 4757, 4758, 4759, 4760, 4761, 4762, 4763, 4764, 4765, 4766, 4767, 4768, 4769, 4770, 4771, 4772, 4773, 4774, 4775, 4776, 4777, 4778, 4779, 4780, 4781, 4782, 4783, 4784, 4785, 4786, 4787, 4788, 4789, 4790, 4791, 4792, 4793, 4794, 4795, 4796, 4797, 4798, 4799, 4800, 4801, 4802, 4803, 4804, 4805, 4806, 4807, 4808, 4809, 4810, 4811, 4812, 4813, 4814, 4815, 4816, 4817, 4818, 4819, 4820, 4821, 4822, 4823, 4824, 4825, 4826, 4827, 4828, 4829, 4830, 4831, 4832, 4833, 4834, 4835, 4836, 4837, 4838, 4839, 4840, 4841, 4842, 4843, 4844, 4845, 4846, 4847, 4848, 4849, 4850, 4851, 4852, 4853, 4854, 4855, 4856, 4857, 4858, 4859, 4860, 4861, 4862, 4863, 4864, 4865, 4866, 4867, 4868, 4869, 4870, 4871, 4872, 4873, 4874, 4875, 4876, 4877, 4878, 4879, 4880, 4881, 4882, 4883, 4884, 4885, 4886, 4887, 4888, 4889, 4890, 4891, 4892, 4893, 4894, 4895, 4896, 4897, 4898, 4899, 4900, 4901, 4902, 4903, 4904, 4905, 4906, 4907, 4908, 4909, 4910, 4911, 4912, 4913, 4914, 4915, 4916, 4917, 4918, 4919, 4920, 4921, 4922, 4923, 4924, 4925, 4926, 4927, 4928, 4929, 4930, 4931, 4932, 4933, 4934, 4935, 4936, 4937, 4938, 4939, 4940, 4941, 4942, 4943, 4944, 4945, 4946, 4947, 4948, 4949, 4950, 4951, 4952, 4953, 4954, 4955, 4956, 4957, 4958, 4959, 4960, 4961, 4962, 4963, 4964, 4965, 4966, 4967, 4968, 4969, 4970, 4971, 4972, 4973, 4974, 4975, 4976, 4977, 4978, 4979, 4980, 4981, 4982, 4983, 4984, 4985, 4986, 4987, 4988, 4989, 4990, 4991, 4992, 4993, 4994, 4995, 4996, 4997, 4998, 4999, 5000, 5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008, 5009, 5010, 5011, 5012, 5013, 5014, 5015, 5016, 5017, 5018, 5019, 5020, 5021, 5022
             ])
         )
-        self.v.register_buffer(
-            "back_half_2",
-            torch.tensor([8, 9, 10, 11, 12, 13, 14, 15, 109, 110, 111, 112, 193, 194, 195, 196, 219, 220, 221, 222, 333, 334, 445, 447, 539, 540, 553, 558, 577, 578, 579, 580, 633, 644, 645, 648, 736, 737, 740, 745, 746, 747, 748, 886, 887, 888, 889, 1016, 1017, 1018, 1148, 1149, 1298, 1299, 1308, 1309, 1310, 1312, 1322, 1323, 1324, 1325, 1326, 1423, 1424, 1454, 1455, 1456, 1457, 1470, 1493, 1494, 1653, 1654, 1655, 1656, 1857, 1858, 1867, 1878, 1879, 1886, 1887, 1894, 1896, 1897, 1903, 1932, 1933, 1946, 1947, 1948, 1949, 1950, 1965, 1966, 1967, 1968, 1969, 1970, 1991, 1992, 2005, 2006, 2007, 2008, 2025, 2026, 2029, 2033, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2115, 2130, 2133, 2144, 2147, 2151, 2162, 2218, 2219, 2222, 2223, 2224, 2225, 2226, 2374, 2375, 2376, 2474, 2475, 2476, 2477, 2480, 2481, 2482, 2483, 2484, 2560, 2561, 2591, 2592, 2593, 2594, 2607, 2629, 2630, 2770, 2771, 2772, 2773, 2950, 2960, 2961, 2964, 2965, 2972, 2974, 2975, 2981, 3010, 3011, 3012, 3013, 3014, 3025, 3026, 3027, 3028, 3029, 3030, 3047, 3048, 3065, 3066, 3067, 3069, 3071, 3072, 3073, 3074, 3075, 3076, 3142, 3174, 3184, 3185, 3186, 3187, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3208, 3209, 3216, 3217, 3218, 3219, 3221, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3252, 3255, 3256, 3257, 3258, 3259, 3260, 3261, 3262, 3266, 3267, 3271, 3272, 3273, 3274, 3275, 3279, 3280, 3282, 3284, 3285, 3287, 3289, 3290, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3311, 3312, 3319, 3320, 3321, 3322, 3324, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3345, 3346, 3347, 3348, 3349, 3350, 3351, 3354, 3355, 3356, 3357, 3358, 3359, 3360, 3361, 3365, 3366, 3370, 3371, 3372, 3373, 3374, 3375, 3377, 3379, 3510, 3517, 3522, 3523, 3525, 3529, 3530, 3535, 3536, 3539, 3545, 3557, 3558, 3562, 3566, 3569, 3570, 3574, 3736, 3768, 3785, 3879, 3897])
-        )
-        self.v.register_buffer(
-            "eye_pit",
-            torch.tensor([
-            1045, 1046, 3616, 1059, 1060, 1061, 1062, 1063, 1064, 1065, 3619, 1068, 1075, 3638, 1085, 1086, 1101, 1108, 1115, 1116, 1117, 1125, 1126, 1127, 1128, 1129, 3687, 1132, 1134, 1135, 3700, 1142, 1143, 1144, 3702, 1146, 1147, 1150, 1151, 1217, 1224, 1227, 1228, 1229, 1230, 1232, 1233, 1241, 1242, 1243, 1244, 2268, 2269, 2270, 2274, 2275, 2279, 2280, 2281, 2282, 2283, 2284, 2285, 2286, 2287, 3824, 2288, 2289, 3827, 3835, 1283, 1284, 1287, 1289, 1292, 3853, 1293, 1294, 3861, 3862, 1320, 1321, 815, 816, 2356, 821, 2357, 2360, 825, 826, 2361, 2362, 2363, 2364, 2365, 2366, 2367, 2368, 2369, 837, 838, 840, 841, 842, 1356, 846, 847, 848, 1361, 2386, 2387, 2388, 2389, 2390, 2391, 2392, 3929, 2393, 2394, 3930, 2395, 2396, 2397, 864, 865, 2398, 2404, 2405, 2408, 2409, 2410, 2411, 2412, 877, 2413, 2414, 2415, 2416, 2417, 2418, 2419, 2420, 2421, 2423, 2424, 2422, 2425, 2452, 2454, 2457, 2458, 2459, 2460, 2461, 2462, 2463, 2464, 2465, 2466, 2467, 2468, 2469, 2470, 2471, 2472, 2473, 2478, 2479, 2507, 2510, 992, 993, 999, 1000, 1001, 1002, 1003, 1006, 1007, 1008, 1010, 1011
-            ])
-        )
-
-        self.v.register_buffer(
-            "back_head",
-            torch.tensor([8, 9, 10, 11, 12, 13, 14, 15, 109, 110, 111, 112, 193, 194, 195, 196, 219, 220, 221, 222, 333, 334, 445, 447, 539, 540, 553, 558, 577, 578, 579, 580, 645, 648, 736, 737, 740, 745, 746, 747, 748, 886, 887, 888, 889, 1016, 1017, 1018, 1148, 1149, 1298, 1299, 1308, 1309, 1310, 1312, 1322, 1323, 1324, 1325, 1326, 1423, 1424, 1454, 1455, 1456, 1457, 1470, 1493, 1494, 1653, 1654, 1655, 1857, 1858, 1867, 1879, 1886, 1887, 1894, 1896, 1897, 1903, 1932, 1933, 1946, 1947, 1948, 1949, 1950, 1965, 1966, 1967, 1968, 1969, 1970, 1991, 1992, 2005, 2006, 2007, 2008, 2025, 2026, 2029, 2033, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2115, 2144, 2147, 2151, 2162, 2218, 2219, 2222, 2223, 2224, 2225, 2226, 2374, 2375, 2376, 2474, 2475, 2476, 2477, 2480, 2481, 2482, 2483, 2484, 2560, 2561, 2591, 2592, 2593, 2594, 2607, 2629, 2630, 2770, 2771, 2772, 2950, 2961, 2964, 2965, 2972, 2974, 2975, 2981, 3010, 3011, 3012, 3013, 3014, 3025, 3026, 3027, 3028, 3029, 3030, 3047, 3048, 3065, 3066, 3067, 3069, 3071, 3072, 3073, 3074, 3075, 3076, 3142, 3174, 3184, 3185, 3186, 3187, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3208, 3209, 3219, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3259, 3260, 3261, 3262, 3266, 3267, 3272, 3273, 3274, 3275, 3279, 3280, 3282, 3290, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3311, 3312, 3322, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3345, 3346, 3347, 3348, 3349, 3350, 3358, 3359, 3360, 3361, 3365, 3366, 3371, 3372, 3373, 3374, 3375, 3510, 3517, 3522, 3523, 3529, 3530, 3535, 3536, 3539, 3545, 3557, 3562, 3566, 3569, 3570, 3574])
-        )
-
-        self.v.register_buffer(
-            "back_head_2",
-            torch.tensor([8, 9, 10, 11, 12, 13, 14, 15, 109, 110, 111, 112, 193, 194, 195, 196, 219, 220, 221, 222, 333, 334, 445, 447, 539, 540, 553, 558, 577, 578, 579, 580, 633, 644, 645, 648, 736, 737, 740, 745, 746, 747, 748, 886, 887, 888, 889, 1016, 1017, 1018, 1148, 1149, 1298, 1299, 1308, 1309, 1310, 1312, 1322, 1323, 1324, 1325, 1326, 1423, 1424, 1454, 1455, 1456, 1457, 1470, 1493, 1494, 1653, 1654, 1655, 1656, 1857, 1858, 1867, 1878, 1879, 1886, 1887, 1894, 1896, 1897, 1903, 1932, 1933, 1946, 1947, 1948, 1949, 1950, 1965, 1966, 1967, 1968, 1969, 1970, 1991, 1992, 2005, 2006, 2007, 2008, 2025, 2026, 2029, 2033, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2115, 2130, 2133, 2144, 2147, 2151, 2162, 2218, 2219, 2222, 2223, 2224, 2225, 2226, 2374, 2375, 2376, 2474, 2475, 2476, 2477, 2480, 2481, 2482, 2483, 2484, 2560, 2561, 2591, 2592, 2593, 2594, 2607, 2629, 2630, 2770, 2771, 2772, 2773, 2950, 2960, 2961, 2964, 2965, 2972, 2974, 2975, 2981, 3010, 3011, 3012, 3013, 3014, 3025, 3026, 3027, 3028, 3029, 3030, 3047, 3048, 3065, 3066, 3067, 3069, 3071, 3072, 3073, 3074, 3075, 3076, 3142, 3174, 3184, 3185, 3186, 3187, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3208, 3209, 3216, 3217, 3218, 3219, 3221, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3252, 3255, 3256, 3257, 3258, 3259, 3260, 3261, 3262, 3266, 3267, 3271, 3272, 3273, 3274, 3275, 3279, 3280, 3282, 3284, 3285, 3287, 3289, 3290, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3311, 3312, 3319, 3320, 3321, 3322, 3324, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3345, 3346, 3347, 3348, 3349, 3350, 3351, 3354, 3355, 3356, 3357, 3358, 3359, 3360, 3361, 3365, 3366, 3370, 3371, 3372, 3373, 3374, 3375, 3377, 3379, 3510, 3517, 3522, 3523, 3525, 3529, 3530, 3535, 3536, 3539, 3545, 3557, 3558, 3562, 3566, 3569, 3570, 3574, 3736, 3768, 3785, 3879, 3897])
-        )
 
         # remove the intersection with neck from scalp and get the region for hair
         face_and_neck = torch.cat([self.v.face, self.v.neck]).unique()
@@ -840,7 +921,6 @@ class FlameMask(nn.Module):
         self.v.register_buffer("irises", torch.cat([self.v.right_iris, self.v.left_iris]))
         self.v.register_buffer("left_eye", torch.cat([self.v.left_eye_region, self.v.left_eyeball]))
         self.v.register_buffer("right_eye", torch.cat([self.v.right_eye_region, self.v.right_eyeball]))
-        self.v.register_buffer("eyes", torch.cat([self.v.left_eye_region, self.v.left_eyeball, self.v.right_eye_region, self.v.right_eyeball]))
         self.v.register_buffer("eyelids", torch.cat([self.v.left_eyelid, self.v.right_eyelid]))
         self.v.register_buffer("lip_inside_ring", torch.cat([self.v.lip_inside_ring_upper, self.v.lip_inside_ring_lower, torch.tensor([1594, 2730])]))
 
@@ -865,6 +945,7 @@ class FlameMask(nn.Module):
                 self.vid_to_region[v_id.item()].append(region_name)
     
     def process_face_mask(self, faces):
+        logger.info("Processing face masks for FLAME...")
         
         face_masks = defaultdict(list)  # region name -> face id
         for f_id, f in enumerate(faces):
@@ -891,16 +972,21 @@ class FlameMask(nn.Module):
             cluster #3: faces in face_clusters[1]
             ...
         """
+        logger.info("Processing face clusters...")
+
         fid2cid = torch.ones(self.num_faces+1, dtype=torch.long)  # faces are always treated as foreground
         for cid, cluster in enumerate(face_clusters):
             try:
                 fids = self.get_fid_by_region([cluster])
             except Exception as e:
+                logger.warning(f"Ignoring unknown cluster {cluster}.")
                 continue
             fid2cid[fids] = cid + 2  # reserve cluster #0 for the background and #1 for faces that do not belong to any cluster
         self.register_buffer("fid2cid", fid2cid)
     
     def process_vt_mask(self, faces, faces_t):
+        logger.info("Processing vt masks for FLAME...")
+        
         vt_masks = defaultdict(list)  # region name -> vt id
         for f_id, (face, face_t) in enumerate(zip(faces, faces_t)):
             for v_id, vt_id in zip(face, face_t):
@@ -969,5 +1055,17 @@ class FlameMask(nn.Module):
         return uniques[counts == 1]
 
 
-if __name__ == '__main__':
-    flame_model = FlameHead(shape_params=300, expr_params=100)
+class FlameUvMask(BufferContainer):
+    def __init__(self, uv_mask_path=FLAME_UVMASK_PATH):
+        super().__init__()
+        logger.info("Processing uv masks for FLAME...")
+        
+        uv_masks = np.load(uv_mask_path, allow_pickle=True, encoding="latin1")
+        for region_name, uv_mask in uv_masks.items():
+            self.register_buffer(region_name, torch.tensor(uv_mask, dtype=torch.bool))
+    
+    def get_uvmask_by_region(self, regions):
+        """Get uv masks by regions"""
+        if isinstance(regions, str):
+            regions = [regions]
+        return torch.cat([self.get_buffer(k)[..., None] for k in regions], dim=-1).max(dim=-1)[0]

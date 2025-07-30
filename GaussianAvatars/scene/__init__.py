@@ -58,15 +58,26 @@ class CameraDataset(torch.utils.data.Dataset):
             resized_image_rgb = PILtoTorch(image, (camera.image_width, camera.image_height))
             # print("debug read image:", resized_image_rgb.shape)
 
-            image = resized_image_rgb[:, ...]
 
-            # if resized_image_rgb.shape[1] == 4:
-            #     gt_alpha_mask = resized_image_rgb[3:4, ...]
-            #     image *= gt_alpha_mask
+            image = resized_image_rgb[:3, ...]
+            
+            if resized_image_rgb.shape[1] == 4:
+                gt_alpha_mask = resized_image_rgb[3:4, ...]
+                image *= gt_alpha_mask
             
             ####
             # print("debug image:",resized_image_rgb.shape, resized_image_rgb.shape[1], image)
             camera.original_image = image.clamp(0.0, 1.0)
+
+            # LM3D : load foreground mask
+            #TODO: might causes bugs
+            if camera.fg_mask_path is not None:
+                fg_mask = Image.open(camera.fg_mask_path)
+                resized_fg_mask = fg_mask.resize((camera.image_width, camera.image_height), Image.LANCZOS)
+                fg_data = np.array(resized_fg_mask.convert("L"))
+                fg_data = torch.tensor(fg_data, dtype=torch.float32) / 255.0
+                camera.fg_mask = fg_data
+
             return camera
         elif isinstance(idx, slice):
             return CameraDataset(self.cameras[idx])
@@ -77,7 +88,9 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : Union[GaussianModel, FlameGaussianModel], load_iteration=None, shuffle=True, resolution_scales=[1.0], load_ply_path=None, opt = None):
+
+    def __init__(self, args : ModelParams, gaussians : Union[GaussianModel, FlameGaussianModel], load_iteration=None, shuffle=True, resolution_scales=[1.0], ply_path=None, opt = None):
+
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -156,24 +169,23 @@ class Scene:
                             "point_cloud.ply"),
                 has_target=args.target_path != "",
             )
-        elif load_ply_path: ####
-            print("load trained point clound from {}".format(load_ply_path))
-            self.gaussians.load_ply(
-                load_ply_path,
-                has_target=args.target_path != "",
-            ) ####
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, initial_pc_size=opt.initial_pc_size)
+            if ply_path is not None: # LM3D : load from ply
+                print("Loading point cloud from provided ply file: {}".format(ply_path))
+                self.gaussians.load_ply(ply_path, has_target=args.target_path != "")
+            else:
+                # main train
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, initial_pc_size=opt.initial_pc_size)
 
     def save(self, iteration,opt):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"),opt)
 
-    def getTrainCameras(self, scale=1.0):
+    def getTrainCameras(self, scale=0.5):
         return CameraDataset(self.train_cameras[scale])
     
-    def getValCameras(self, scale=1.0):
+    def getValCameras(self, scale=0.5):
         return CameraDataset(self.val_cameras[scale])
 
-    def getTestCameras(self, scale=1.0):
+    def getTestCameras(self, scale=0.5):
         return CameraDataset(self.test_cameras[scale])

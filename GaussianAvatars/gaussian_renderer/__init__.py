@@ -16,7 +16,8 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene import GaussianModel, FlameGaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : Union[GaussianModel, FlameGaussianModel], pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+# LM3D : some more arguments
+def render(viewpoint_camera, pc : Union[GaussianModel, FlameGaussianModel], pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, backface_culling = False, depth_map = False):
     """
     Render the scene. 
     
@@ -83,82 +84,86 @@ def render(viewpoint_camera, pc : Union[GaussianModel, FlameGaussianModel], pipe
     else:
         colors_precomp = override_color
 
-    #### back-face culling
-    faces = pc.flame_model.faces # (1, 10144, 3)
-    # print("debug faces",faces.shape, faces)
-    verts = pc.verts # (1, 5023, 3)
-    # print("debug verts",verts.shape, verts)
-    triangles = verts[:, faces] # (1, 10144, 3, 3)
-    # print("debug triangles",triangles.shape, triangles)
-    v0 = triangles[:, :, 0, :]  # (1, 10144, 3)
-    v1 = triangles[:, :, 1, :]  # (1, 10144, 3)
-    v2 = triangles[:, :, 2, :]  # (1, 10144, 3)
-    edge1 = v1 - v0  # (1, 10144, 3)
-    edge2 = v2 - v0  # (1, 10144, 3)
-    face_norm = torch.cross(edge1, edge2, dim=-1)  # (1, 10144, 3)
-    face_norm = torch.nn.functional.normalize(face_norm, p=2, dim=-1)
-    # print("debug normal:",type(face_norm), face_norm.shape, face_norm[0][0])
-    camera_center = viewpoint_camera.camera_center.clone().to(pc.get_xyz.device)
-    # print ("debug xyz", pc.get_xyz.device, "\ndebug camera",camera_center.device, camera_center , camera_center.repeat(pc.get_features.shape[0], 1).shape)
-    dir_pp = (pc.get_xyz - camera_center.repeat(pc.get_features.shape[0], 1))
-    dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True) # (1, pc, 3)
-    pc_bind = pc.binding # (pc)
-    pc_norm = face_norm[:, pc_bind] # (1, pc, 3)
-    # print ("debug bind", pc_bind.shape, "debug pc_norm", pc_norm.shape)
-    # print ("debug norm", face_norm.shape, "\ndebug dir", dir_pp_normalized.shape, dir_pp_normalized)
-    dot = (pc_norm[0] * dir_pp_normalized).sum(dim = 1) # (pc)
-    # print ("debug dot", dot.shape)
-    # front = dot <= 0.4 # (pc)
-    front = torch.sigmoid(dot * -10.)
-    # front = torch
-    # print ("debug front", front.shape, front)
-    opacity_back_cull = opacity.clone()
-    # opacity_back_cull[:, 0] *= front # (pc, 1)
-    opacity_back_cull = opacity_back_cull * front.unsqueeze(1) 
-    #### bfc end
-    # print ("debug opacity_back_cull", opacity_back_cull.shape, opacity_back_cull)
-    # opacity_fix = torch.ones_like(opacity)
-    # print ("debug opacity_fix", opacity_fix.shape, opacity_fix)
-    # opacity_fix[:, 0] *= front
 
-    # device = means3D.device
-    # assert all(t is None or (t.device == device)for t in [
-    #     means2D, shs, colors_precomp, opacity_back_cull, scales, rotations, cov3D_precomp])
-    # assert all(t is None or (not torch.isnan(t).any())for t in [
-    #     means2D, shs, colors_precomp])
-    # assert all(t is None or (not torch.isnan(t).any())for t in [
-    #     opacity_back_cull, scales])
-    # assert all(t is None or (not torch.isnan(t).any())for t in [
-    #     rotations, cov3D_precomp])
-    # assert all(t is None or (not torch.isinf(t).any())for t in [
-    #     means2D, shs, colors_precomp, opacity_back_cull, scales, rotations, cov3D_precomp])
+    # --------------------------------------------------------------------
+#     #### back-face culling
+#     faces = pc.flame_model.faces # (1, 10144, 3)
+#     # print("debug faces",faces.shape, faces)
+#     verts = pc.verts # (1, 5023, 3)
+#     # print("debug verts",verts.shape, verts)
+#     triangles = verts[:, faces] # (1, 10144, 3, 3)
+#     # print("debug triangles",triangles.shape, triangles)
+#     v0 = triangles[:, :, 0, :]  # (1, 10144, 3)
+#     v1 = triangles[:, :, 1, :]  # (1, 10144, 3)
+#     v2 = triangles[:, :, 2, :]  # (1, 10144, 3)
+#     edge1 = v1 - v0  # (1, 10144, 3)
+#     edge2 = v2 - v0  # (1, 10144, 3)
+#     face_norm = torch.cross(edge1, edge2, dim=-1)  # (1, 10144, 3)
+#     face_norm = torch.nn.functional.normalize(face_norm, p=2, dim=-1)
+#     # print("debug normal:",type(face_norm), face_norm.shape, face_norm[0][0])
+#     camera_center = viewpoint_camera.camera_center.clone().to(pc.get_xyz.device)
+#     # print ("debug xyz", pc.get_xyz.device, "\ndebug camera",camera_center.device, camera_center , camera_center.repeat(pc.get_features.shape[0], 1).shape)
+#     dir_pp = (pc.get_xyz - camera_center.repeat(pc.get_features.shape[0], 1))
+#     dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True) # (1, pc, 3)
+#     pc_bind = pc.binding # (pc)
+#     pc_norm = face_norm[:, pc_bind] # (1, pc, 3)
+#     # print ("debug bind", pc_bind.shape, "debug pc_norm", pc_norm.shape)
+#     # print ("debug norm", face_norm.shape, "\ndebug dir", dir_pp_normalized.shape, dir_pp_normalized)
+#     dot = (pc_norm[0] * dir_pp_normalized).sum(dim = 1) # (pc)
+#     # print ("debug dot", dot.shape)
+#     # front = dot <= 0.4 # (pc)
+#     front = torch.sigmoid(dot * -10.)
+#     # front = torch
+#     # print ("debug front", front.shape, front)
+#     opacity_back_cull = opacity.clone()
+#     # opacity_back_cull[:, 0] *= front # (pc, 1)
+#     opacity_ = opacity_back_cull * front.unsqueeze(1) 
+    # --------------------------------------------------------------------
 
-    # print ("debug xyz", pc.get_xyz.shape, pc.face_center[pc.binding].shape)
-    # dif = pc.get_xyz - pc.face_center[pc.binding]
-    # dif = torch.linalg.vector_norm(dif, dim = 1) # (pc)
-    # print ("debug dif", dif.shape, dif)
-    # near = dif < 0.06
-    # opacity_back_cull[:, 0] *= near
+    opacity_ = opacity.clone()
+
+    # --------------------------------------------------------------------
+    # LM3D : Bcull
+    if backface_culling and isinstance(pc, FlameGaussianModel):
+        xyz_ , triangles = pc.get_xyz, pc.triangles
+
+        # normal = cross(edge1, edge2)
+        normals = torch.cross(triangles[:, :, 1, :] - triangles[:, :, 0, :], 
+                            triangles[:, :, 2, :] - triangles[:, :, 0, :], dim=-1)
+        normals = normals / normals.norm(dim=1, keepdim=True)
+
+        point_cam = viewpoint_camera.camera_center.repeat(xyz_.shape[0], 1).cuda()
+
+        face_to_cam = point_cam - xyz_
+        face_to_cam = face_to_cam / face_to_cam.norm(dim=1, keepdim=True)
+
+        # indexing normals to guass
+        normals = normals[:, pc.binding].squeeze(0)
+
+        dot_product = (normals * face_to_cam).sum(dim=1, keepdim=True)
+
+        visible = dot_product >= 0.0
+
+        opacity_ = opacity_ * visible
+
+    # LM3D : depth map
+    if depth_map:
+        distance = (means3D - viewpoint_camera.camera_center.repeat(means3D.shape[0], 1).cuda()).norm(dim=1, keepdim=True)
+        # normalize [0, 1] for opacity
+        opacity_ = opacity_ * (1.0 - torch.clamp_min(distance / 10.0, 0.0))
+    # --------------------------------------------------------------------
+    
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
         colors_precomp = colors_precomp,
-        # opacities = opacity,
-        opacities = opacity_back_cull,
-        # opacities = opacity_fix,
+        opacities = opacity_,
         scales = scales,
         rotations = rotations, 
         cov3D_precomp = cov3D_precomp)
-
-    # radii = radii.clone()
-    # assert isinstance(radii, torch.Tensor), "radii is not a tensor"
-    # assert radii.device == device, f"radii is on {radii.device}, expected {device}"
-    # assert radii.shape[0] > 0, "radii is empty"
-    # assert not torch.isnan(radii).any(), "radii has NaNs"
-    # assert not torch.isinf(radii).any(), "radii has Infs"
-    # print("radii shape:", radii.shape)
 
     visibility = radii > 0
 

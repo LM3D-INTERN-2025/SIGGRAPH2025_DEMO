@@ -23,20 +23,35 @@ from gaussian_renderer import render, network_gui
 from mesh_renderer import NVDiffRenderer
 import sys
 from scene import Scene, GaussianModel, FlameGaussianModel
+
 from utils.general_utils import safe_state,save_config
+
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr, error_map
 from lpipsPyTorch import lpips
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
+from PIL import Image
+import numpy as np
+from utils.general_utils import safe_state, save_config
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, ply_path):
+
+def save_image_debug(image, dir, iteration):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    image = (image * 255).clamp(0, 255).byte()
+    image = image.permute(1, 2, 0).cpu().numpy()
+    Image.fromarray(image).save(os.path.join(dir, f"iter_{iteration}.jpg"))
+
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     save_config(dataset, opt, pipe)
@@ -45,11 +60,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         mesh_renderer = NVDiffRenderer()
     else:
         gaussians = GaussianModel(dataset.sh_degree, dataset.coord)
-    scene = Scene(dataset, gaussians, opt=opt)
-    ####
-    if dataset.ply_path:
-        gaussians.load_ply(dataset.ply_path, has_target=False, is_training=True)
-
+    scene = Scene(dataset, gaussians, resolution_scales=[dataset.scale_res], opt=opt)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -64,7 +75,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    loader_camera_train = DataLoader(scene.getTrainCameras(), batch_size=None, shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
+    loader_camera_train = DataLoader(scene.getTrainCameras(scale=dataset.scale_res), batch_size=None, shuffle=True, num_workers=8, pin_memory=True, persistent_workers=True)
     iter_camera_train = iter(loader_camera_train)
     # viewpoint_stack = None
     ema_loss_for_log = 0.0
@@ -124,8 +135,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        ####
+        # LM3D : one up SH degree every 100 iterations
+
         if iteration % 100 == 0:
             gaussians.oneupSHdegree()
 
@@ -141,7 +152,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, backface_culling=opt.bcull)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         ####
         
@@ -179,11 +190,31 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # image = rgba_mesh
             # image[:3, :, :] *= alpha_map
 
+        # print("Shapes: image {}, gt_image {}".format(
+        #     image.shape, gt_image.shape))
+
+        # LM3D : alpha map for image
+        alpha_map = viewpoint_cam.fg_mask.cuda() # (w, h)
+        
+        alpha_map = alpha_map.unsqueeze(0).expand_as(gt_image)  # (3, w, h)
+        gt_image = gt_image * alpha_map # (3, w, h)
+
+        gt_filter = alpha_map
+
+        # gt_filter = torch.where((scaled_gt_image.mean(dim=0, keepdim=True) > 0.95) | (scaled_gt_image.mean(dim=0, keepdim=True) < 0.05), torch.zeros_like(gt_image), torch.ones_like(gt_image)).cuda()
+        override_color = torch.ones_like(gaussians._xyz).cuda()
+        filter_render = render(viewpoint_cam, gaussians, pipe, torch.zeros(3).cuda() , override_color=override_color, backface_culling=opt.bcull, depth_map=opt.depth)["render"]
+
+        if iteration % pipe.interval_media == 0:
+            save_image_debug(gt_filter, os.path.join(dataset.model_path, "gt_filter"), iteration)
+            save_image_debug(filter_render, os.path.join(dataset.model_path, "ren_filter"), iteration)
+            save_image_debug(gt_image, os.path.join(dataset.model_path, "gt_image"), iteration)
+            save_image_debug(image, os.path.join(dataset.model_path, "rendered"), iteration)
+
         losses = {}
         losses['l1'] = l1_loss(image, gt_image) * (1.0 - opt.lambda_dssim)
         losses['ssim'] = (1.0 - ssim(image, gt_image)) * opt.lambda_dssim
 
-        losses['opacity'] = (l1_loss(image[3:, :, :], gt_alpha_map) * (1.0 - opt.lambda_dssim) + (1.0 - ssim(image[3:, :, :], gt_alpha_map)) * opt.lambda_dssim)
 
         if opt.train_texture and iteration >= opt.texture_start_iter:
             gt_texture = gaussians.flame_model.input_texture.cuda()
@@ -192,6 +223,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             losses['texture'] = l1_loss(texture, gt_texture) * opt.texture_lambda
             losses['texture_alpha'] = l1_loss(texture_alpha, torch.zeros_like(texture_alpha)) * opt.texture_lambda
             # print("debug texture loss:", losses['texture'].item())
+
+        # LM3D : filter loss
+        losses['filter'] = F.l1_loss(filter_render, gt_filter) * opt.lambda_filter
+
 
         if gaussians.binding != None:
             if opt.metric_xyz:
@@ -231,7 +266,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Progress bar
             ema_loss_for_log = 0.4 * losses['total'].item() + 0.6 * ema_loss_for_log
             if iteration % 10 == 0:
-                postfix = {"Loss": f"{ema_loss_for_log:.{7}f}"}
+                postfix = {"n_Points": f"{gaussians._xyz.shape[0]:,}"}
+                postfix["Loss"] = f"{ema_loss_for_log:.{7}f}"
+                # ------------------------
+                postfix["opac"] = f"{gaussians.get_opacity.mean().item():.{7}f}"
+                postfix["filter"] = f"{losses['filter']:.{7}f}"
+                # ------------------------
                 if 'xyz' in losses:
                     postfix["xyz"] = f"{losses['xyz']:.{7}f}"
                 if 'scale' in losses:
@@ -242,13 +282,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     postfix["lap"] = f"{losses['lap']:.{7}f}"
                 if 'dynamic_offset_std' in losses:
                     postfix["dynamic_offset_std"] = f"{losses['dynamic_offset_std']:.{7}f}"
+
                 progress_bar.set_postfix(postfix)
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, losses, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            training_report(tb_writer, iteration, losses, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (dataset ,pipe, background))
             if (iteration in saving_iterations):
                 save_image_debug(gt_image[:3, :, :] * gt_image[3:, :, :], os.path.join(dataset.model_path, "gt_image"), iteration)
                 save_image_debug(image[:3, :, :] * image[3:, :, :], os.path.join(dataset.model_path, "rendered"), iteration)
@@ -271,9 +312,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                
-                ####
+
+                    # LM3D : adjust opacity threshold
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.001, scene.cameras_extent, size_threshold)
+
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
                     ###
@@ -282,6 +325,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+
+            gaussians.clamp_scaling(max_scaling=opt.max_scaling)  # LM3D : clamp scaling to 0.5
 
             if (iteration in checkpoint_iterations):
                 print("[ITER {}] Saving Checkpoint".format(iteration))
@@ -310,6 +355,7 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, losses, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+    dataset = renderArgs[0]
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', losses['l1'].item(), iteration)
         tb_writer.add_scalar('train_loss_patches/ssim_loss', losses['ssim'].item(), iteration)
@@ -331,8 +377,8 @@ def training_report(tb_writer, iteration, losses, elapsed, testing_iterations, s
         print("[ITER {}] Evaluating".format(iteration))
         torch.cuda.empty_cache()
         validation_configs = (
-            {'name': 'val', 'cameras' : scene.getValCameras()},
-            {'name': 'test', 'cameras' : scene.getTestCameras()},
+            {'name': 'val', 'cameras' : scene.getValCameras(scale=dataset.scale_res)},
+            {'name': 'test', 'cameras' : scene.getTestCameras(scale=dataset.scale_res)},
         )
 
         for config in validation_configs:
@@ -342,7 +388,7 @@ def training_report(tb_writer, iteration, losses, elapsed, testing_iterations, s
                 psnr_test = 0.0
                 ssim_test = 0.0
                 lpips_test = 0.0
-                num_vis_img = 1
+                num_vis_img = 1 # LM3D : 10 to 1
                 image_cache = []
                 gt_image_cache = []
                 vis_ct = 0
