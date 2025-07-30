@@ -40,20 +40,22 @@ def loadCam(args, id, cam_info, resolution_scale):
         image_width, image_height = (int(orig_w / scale), int(orig_h / scale))
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
-                  image_width=image_width, image_height=image_height,
-                  bg=cam_info.bg, 
-                  image=cam_info.image, 
-                  image_path=cam_info.image_path,
-                  image_name=cam_info.image_name, uid=id, 
-                  timestep=cam_info.timestep, data_device=args.data_device)
+                FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
+                image_width=image_width, image_height=image_height,
+                bg=cam_info.bg, 
+                image=cam_info.image, 
+                image_path=cam_info.image_path,
+                image_name=cam_info.image_name, uid=id, 
+                timestep=cam_info.timestep, data_device=args.data_device,
+                fg_mask_path=cam_info.fg_mask_path) # LM3D : fg mask path
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
     for id, c in tqdm(enumerate(cam_infos), total=len(cam_infos)):
-        if args.select_camera_id != -1 and c.camera_id is not None:
-            if c.camera_id != args.select_camera_id:
+        # if args.select_camera_id != -1 and c.camera_id is not None:
+        if args.omit_camera_id != [] and c.camera_id is not None:
+            if c.camera_id in args.omit_camera_id:
                 continue
         camera_list.append(loadCam(args, id, c, resolution_scale))
 

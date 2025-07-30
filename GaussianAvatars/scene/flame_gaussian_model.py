@@ -37,8 +37,16 @@ class FlameGaussianModel(GaussianModel):
 
         # binding is initialized once the mesh topology is known
         if self.binding is None:
-            self.binding = torch.arange(len(self.flame_model.faces)).cuda()
-            self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda()
+            # self.binding = torch.arange(len(self.flame_model.faces)).cuda()
+            n_init = 100
+            n_eye_init = 500
+            eyelid = self.flame_model.mask.get_fid_by_region(['eye_region'])
+            repeated_eyelid = torch.repeat_interleave(eyelid, n_eye_init).cuda()
+            self.binding = torch.repeat_interleave(torch.arange(len(self.flame_model.faces)), n_init).cuda()
+            self.binding = torch.cat((self.binding, repeated_eyelid), dim=0)
+
+            self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda() * n_init
+            self.binding_counter[eyelid] += n_eye_init
 
     def load_meshes(self, train_meshes, test_meshes, tgt_train_meshes, tgt_test_meshes):
         if self.flame_param is None:
@@ -149,6 +157,7 @@ class FlameGaussianModel(GaussianModel):
         # for mesh rendering
         self.verts = verts
         self.faces = faces
+        self.triangles = triangles # LM3D : used somewhere else
 
         # for mesh regularization
         self.verts_cano = verts_cano
@@ -224,7 +233,7 @@ class FlameGaussianModel(GaussianModel):
         np.savez(str(npz_path), **flame_param)
 
     def load_ply(self, path, **kwargs):
-        super().load_ply(path)
+        super().load_ply(path, **kwargs)
 
         if not kwargs['has_target']:
             # When there is no target motion specified, use the finetuned FLAME parameters.
@@ -258,7 +267,15 @@ class FlameGaussianModel(GaussianModel):
             self.num_timesteps = self.flame_param['expr'].shape[0]  # required by viewers
         
         if 'disable_fid' in kwargs and len(kwargs['disable_fid']) > 0:
-            mask = (self.binding[:, None] != kwargs['disable_fid'][None, :]).all(-1)
+            # mask = (self.binding[:, None] != kwargs['disable_fid'][None, :]).all(-1)
+
+            # LM3D : fix CUDA OOM
+            disable_fid = torch.tensor(kwargs['disable_fid'], device='cpu')
+            binding_cpu = self.binding.cpu()
+
+            mask_cpu = ~torch.isin(binding_cpu, disable_fid)
+            mask = mask_cpu.to(self.binding.device)
+            # --------------------------------------------
 
             self.binding = self.binding[mask]
             self._xyz = self._xyz[mask]

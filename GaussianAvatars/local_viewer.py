@@ -26,6 +26,7 @@ from gaussian_renderer import GaussianModel, FlameGaussianModel
 from gaussian_renderer import render
 from mesh_renderer import NVDiffRenderer
 
+import time
 
 @dataclass
 class PipelineConfig:
@@ -50,7 +51,7 @@ class Config(Mini3DViewerConfig):
     """default GUI background color"""
     save_folder: Path = Path("./viewer_output")
     """default saving folder"""
-    fps: int = 25
+    fps: int = 60
     """default fps for recording"""
     keyframe_interval: int = 1
     """default keyframe interval"""
@@ -101,14 +102,15 @@ class LocalViewer(Mini3DViewer):
         else:
             self.gaussians = GaussianModel(self.cfg.sh_degree)
 
-        # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['left_half'])
-        # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
+        selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2', 'teeth'])
+        # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['eye_region'])
+        # # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
         # unselected_fid = self.gaussians.flame_model.mask.get_fid_except_fids(selected_fid)
-        unselected_fid = []
+        # unselected_fid = []
         
         if self.cfg.point_path is not None:
             if self.cfg.point_path.exists():
-                self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=unselected_fid)
+                self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=selected_fid)
             else:
                 raise FileNotFoundError(f'{self.cfg.point_path} does not exist.')
 
@@ -669,8 +671,14 @@ class LocalViewer(Mini3DViewer):
                         dpg.set_value("_slider_record_timestep", record_timestep + 1)
                         if dpg.get_value("_checkbox_dynamic_record"):
                             self.timestep = min(self.timestep + 1, self.num_timesteps - 1)
+
+                            if self.timestep >= self.num_timesteps - 1:
+                                self.timestep = 0
+
                             dpg.set_value("_slider_timestep", self.timestep)
                             self.gaussians.select_mesh_by_timestep(self.timestep)
+                            
+                            time.sleep(1 / self.cfg.fps)
 
                         state_dict = self.get_state_dict_record()
                         self.apply_state_dict(state_dict)

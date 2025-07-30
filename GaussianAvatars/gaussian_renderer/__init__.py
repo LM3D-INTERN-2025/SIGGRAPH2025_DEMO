@@ -16,7 +16,8 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene import GaussianModel, FlameGaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : Union[GaussianModel, FlameGaussianModel], pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+# LM3D : some more arguments
+def render(viewpoint_camera, pc : Union[GaussianModel, FlameGaussianModel], pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, backface_culling = False, depth_map = False):
     """
     Render the scene. 
     
@@ -82,13 +83,46 @@ def render(viewpoint_camera, pc : Union[GaussianModel, FlameGaussianModel], pipe
     else:
         colors_precomp = override_color
 
+    opacity_ = opacity.clone()
+
+    # --------------------------------------------------------------------
+    # LM3D : Bcull
+    if backface_culling and isinstance(pc, FlameGaussianModel):
+        xyz_ , triangles = pc.get_xyz, pc.triangles
+
+        # normal = cross(edge1, edge2)
+        normals = torch.cross(triangles[:, :, 1, :] - triangles[:, :, 0, :], 
+                            triangles[:, :, 2, :] - triangles[:, :, 0, :], dim=-1)
+        normals = normals / normals.norm(dim=1, keepdim=True)
+
+        point_cam = viewpoint_camera.camera_center.repeat(xyz_.shape[0], 1).cuda()
+
+        face_to_cam = point_cam - xyz_
+        face_to_cam = face_to_cam / face_to_cam.norm(dim=1, keepdim=True)
+
+        # indexing normals to guass
+        normals = normals[:, pc.binding].squeeze(0)
+
+        dot_product = (normals * face_to_cam).sum(dim=1, keepdim=True)
+
+        visible = dot_product >= 0.0
+
+        opacity_ = opacity_ * visible
+
+    # LM3D : depth map
+    if depth_map:
+        distance = (means3D - viewpoint_camera.camera_center.repeat(means3D.shape[0], 1).cuda()).norm(dim=1, keepdim=True)
+        # normalize [0, 1] for opacity
+        opacity_ = opacity_ * (1.0 - torch.clamp_min(distance / 10.0, 0.0))
+    # --------------------------------------------------------------------
+    
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
         colors_precomp = colors_precomp,
-        opacities = opacity,
+        opacities = opacity_,
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
