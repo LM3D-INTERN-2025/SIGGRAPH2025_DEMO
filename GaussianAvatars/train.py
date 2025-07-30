@@ -158,41 +158,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        gt_alpha_map = gt_image[3:, :, :]
-        # gt_image = gt_image[:3, :, :] * gt_alpha_map
-        gt_image[:3, :, :] *= gt_alpha_map
-        image *= gt_alpha_map
-        # override_color = torch.ones_like(gt_alpha_map).cuda()
-        override_color = torch.ones_like(gaussians._xyz).cuda()
-        background_color = torch.tensor((0.,0.,0.)).cuda()
-        alpha_map = render(viewpoint_cam, gaussians, pipe, background_color, override_color=override_color)["render"]
-        alpha_map = alpha_map[:1, :, :]
-        # filter_zero = (alpha_map == 0.) * 1.
-        # alpha2 = filter_zero + alpha_map
-        # image = (image - background[..., None, None] * (1 - alpha_map)) / (alpha2)  # remove background color
-        # print("debug train images:", image.shape, gt_image.shape, image)
-        
-        if opt.disable_gaussian_splats:
-            image = torch.zeros_like(image)
-            alpha_map = torch.zeros_like(alpha_map)
-
-        image = torch.cat((image, alpha_map),dim = 0)
-       
-        if opt.with_texture and iteration >= opt.texture_start_iter:
-            out_dict = mesh_renderer.render_from_camera(gaussians.verts, gaussians.faces, gaussians.flame_model.verts_uvs, gaussians.flame_model.textures_idx, gaussians.flame_model._tex_painted, gaussians.flame_model._tex_alpha, viewpoint_cam)
-            rgba_mesh = out_dict['rgba'].squeeze(0).permute(2, 0, 1)  # (C, W, H)
-            rgb_mesh = rgba_mesh[:3, :, :]
-            alpha_mesh = rgba_mesh[3:, :, :]
-            # print("debug texture", image.shape, rgba_mesh.shape,torch.max(image_s[3:, :, :]), torch.min(image_s[3:, :, :]),torch.max(alpha_mesh), torch.min(alpha_mesh))
-            image[:3, :, :] += rgb_mesh * (1 - alpha_map)
-            image[3:, :, :] += alpha_mesh * (1 - alpha_map)
-
-            # image = rgba_mesh
-            # image[:3, :, :] *= alpha_map
-
-        # print("Shapes: image {}, gt_image {}".format(
-        #     image.shape, gt_image.shape))
-
+      
         # LM3D : alpha map for image
         alpha_map = viewpoint_cam.fg_mask.cuda() # (w, h)
         
@@ -204,6 +170,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # gt_filter = torch.where((scaled_gt_image.mean(dim=0, keepdim=True) > 0.95) | (scaled_gt_image.mean(dim=0, keepdim=True) < 0.05), torch.zeros_like(gt_image), torch.ones_like(gt_image)).cuda()
         override_color = torch.ones_like(gaussians._xyz).cuda()
         filter_render = render(viewpoint_cam, gaussians, pipe, torch.zeros(3).cuda() , override_color=override_color, backface_culling=opt.bcull, depth_map=opt.depth)["render"]
+
+
+        if opt.disable_gaussian_splats:
+            image = torch.zeros_like(image)
+            alpha_map = torch.zeros_like(alpha_map)
+
+        # image = torch.cat((image, alpha_map),dim = 0) 
+       
+        if opt.with_texture and iteration >= opt.texture_start_iter:
+            out_dict = mesh_renderer.render_from_camera(gaussians.verts, gaussians.faces, gaussians.flame_model.verts_uvs, gaussians.flame_model.textures_idx, gaussians.flame_model._tex_painted, gaussians.flame_model._tex_alpha, viewpoint_cam)
+            rgba_mesh = out_dict['rgba'].squeeze(0).permute(2, 0, 1)  # (C, W, H)
+            rgb_mesh = rgba_mesh[:3, :, :]
+            alpha_mesh = rgba_mesh[3:, :, :]
+            # print("debug texture", image.shape, rgba_mesh.shape,torch.max(image_s[3:, :, :]), torch.min(image_s[3:, :, :]),torch.max(alpha_mesh), torch.min(alpha_mesh))
+            image[:3, :, :] += rgb_mesh * (1 - alpha_map)
+            image[3:, :, :] += alpha_mesh * (1 - alpha_map)
+
 
         if iteration % pipe.interval_media == 0:
             save_image_debug(gt_filter, os.path.join(dataset.model_path, "gt_filter"), iteration)
@@ -291,19 +274,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Log and save
             training_report(tb_writer, iteration, losses, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (dataset ,pipe, background))
             if (iteration in saving_iterations):
-                save_image_debug(gt_image[:3, :, :] * gt_image[3:, :, :], os.path.join(dataset.model_path, "gt_image"), iteration)
-                save_image_debug(image[:3, :, :] * image[3:, :, :], os.path.join(dataset.model_path, "rendered"), iteration)
-                save_image_debug(image[3:, :, :].repeat(3,1,1), os.path.join(dataset.model_path, "opacity"), iteration)
-                error_image = error_map(image[:3,:,:] * image[3:, :, :], gt_image[:3,:,:] * gt_image[3:, :, :])
-                save_image_debug(error_image, os.path.join(dataset.model_path, "error"), iteration)
-                # save_image_debug(gt_filter, os.path.join(dataset.model_path, "gt_filter"), iteration)
-                # save_image_debug(filter_render, os.path.join(dataset.model_path, "ren_filter"), iteration)
                 print("[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration,opt=opt)
-            ####
-            # print("debug visibility filter:", visibility_filter.shape)
-            # print("debug gaussians", gaussians.max_radii2D.shape)
-            ####
+            
             # Densification
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
@@ -496,7 +469,7 @@ if __name__ == "__main__":
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     ####
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.ply_path)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
     # training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done

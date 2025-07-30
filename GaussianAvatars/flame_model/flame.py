@@ -36,7 +36,7 @@ FLAME_MESH_PATH = "flame_model/assets/flame/head_template_mesh.obj"
 FLAME_LMK_PATH = "flame_model/assets/flame/landmark_embedding_with_eyes.npy"
 # FLAME_PAINTED_TEX_PATH = "/mnt/nas/pim/diffuse_albedo2.png"
 # FLAME_PAINTED_TEX_PATH = "/mnt/nas/pim/output2/woman1_seq1_v12_filter_v25_test_texture/point_cloud/iteration_2000/flame_texture.png"
-FLAME_PAINTED_TEX_PATH = Path("/home/pim/GaussianAvatars/flame_model/assets/flame/tex_mean_painted.png")
+FLAME_PAINTED_TEX_PATH = Path("flame_model/assets/flame/tex_mean_painted.png")
 # to be downloaded from https://flame.is.tue.mpg.de/download.php
 # FLAME_MODEL_PATH = "flame_model/assets/flame/generic_model.pkl"  # FLAME 2020
 FLAME_MODEL_PATH = "flame_model/assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)

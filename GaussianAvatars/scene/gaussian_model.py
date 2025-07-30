@@ -259,7 +259,7 @@ class GaussianModel:
             scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         else:
 
-            scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda")* initial_pc_size) # LM3D : 0.01 is the initial scale
+            scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda") * initial_pc_size) # LM3D : 0.01 is the initial scale
 
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
@@ -338,11 +338,11 @@ class GaussianModel:
         mkdir_p(os.path.dirname(path))
 
         if self.coord == "bary":
-            xyz = torch.tensor(self.get_xyz.clone(), dtype=torch.float64)
+            xyz = torch.tensor(self.get_xyz.detach(), dtype=torch.float64)
             xyz_global = xyz.clone()
-            face_center = torch.tensor(self.face_center[self.binding].clone(), dtype=torch.float64)
-            face_scaling = torch.tensor(self.face_scaling[self.binding].clone(), dtype=torch.float64)
-            face_orien_mat = torch.tensor(self.face_orien_mat[self.binding].clone(), dtype=torch.float64)
+            face_center = torch.tensor(self.face_center[self.binding].detach(), dtype=torch.float64)
+            face_scaling = torch.tensor(self.face_scaling[self.binding].detach(), dtype=torch.float64)
+            face_orien_mat = torch.tensor(self.face_orien_mat[self.binding].detach(), dtype=torch.float64)
             eps = 1e-9
             print("debug xyz", torch.all(torch.isfinite(xyz)))
             assert not torch.isnan(xyz).any(), "NaN in barycentric coordinates 1"

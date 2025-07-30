@@ -24,11 +24,11 @@ conda deactivate
 # Train
 
 # random port number
-RANDOM_PORT=$((RANDOM % 10000 + 60000))
+RANDOM_PORT=$((RANDOM % 10000 + 50000))
 
 conda activate gaussian-avatars
 echo "Training Gaussian Avatar..."
 echo "Using port: $RANDOM_PORT"
 cd GaussianAvatars
-python train.py --bind_to_mesh --port $RANDOM_PORT --interval_media 100 --depth --interval 1000 --sh_degree 0 -s ../Data/to_ga/$OUT_NAME --bcull -m ../Result/$GA_NAME
+python train.py --bind_to_mesh --port $RANDOM_PORT --interval_media 100 --depth --interval 1000 --sh_degree 3 -s ../Data/to_ga/$OUT_NAME --bcull -m ../Result/$GA_NAME
 conda deactivate

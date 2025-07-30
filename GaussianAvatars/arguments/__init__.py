@@ -66,7 +66,7 @@ class ModelParams(ParamGroup):
         self.texture_path = ""  # Path to the texture file
 
         self.omit_camera_id = [13, 14] # List of camera IDs to omit from training
-        self.scale_res = 0.25
+        self.scale_res = 1.0
 
 
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -120,12 +120,10 @@ class OptimizationParams(ParamGroup):
         self.lambda_dynamic_offset_std = 0  #1.
 
 
-        self.disable_gaussian_splats = True
-        self.bfc = True
-        self.opacity = True
-        self.with_texture = True
+        self.disable_gaussian_splats = False
+        self.with_texture = False
         self.texture_start_iter = 0
-        self.train_texture = True
+        self.train_texture = False
         self.texture_lr = 0.0025
         self.texture_lambda = 0.1
 
