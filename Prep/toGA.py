@@ -13,7 +13,6 @@ from glob import glob
 import concurrent.futures
 import multiprocessing
 from copy import deepcopy
-import yaml
 import json
 import tyro
 from pathlib import Path
@@ -22,9 +21,6 @@ from PIL import Image
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-import torchvision
-# from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle
-
 from model.flame import FlameHead
 from dataset.lumio_dataset import LumioDataset
 from utils.mesh import get_obj_content

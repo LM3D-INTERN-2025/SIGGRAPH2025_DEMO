@@ -102,7 +102,7 @@ class LocalViewer(Mini3DViewer):
         else:
             self.gaussians = GaussianModel(self.cfg.sh_degree)
 
-        selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2'])
+        selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2', 'teeth'])
         # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['eye_region'])
         # # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
         # unselected_fid = self.gaussians.flame_model.mask.get_fid_except_fids(selected_fid)

@@ -9,17 +9,15 @@ import torch
 import json
 
 from torch.utils.data import Dataset
-
 import torchvision.transforms.functional as F
+from utils.camera import convert_camera_convention
 
-
-from utils import camera
 
 class LumioDataset(Dataset):
     def __init__(
-            self,
-            source_path: pathlib.Path,
-        ):
+        self,
+        source_path: pathlib.Path,
+    ):
         super().__init__()
         self.source_path = source_path
         self.target_extrinsic_type = "c2w"  # or "w2c"
@@ -33,13 +31,18 @@ class LumioDataset(Dataset):
         self.load_cameras()
 
         self.timestep_ids = set(
-            f.split('.')[0].split('_')[-1]
-            for f in os.listdir(self.source_path / self.properties['rgb']['folder']) if f.endswith(self.properties['rgb']['suffix'])
+            f.split(".")[0].split("_")[-1]
+            for f in os.listdir(self.source_path / self.properties["rgb"]["folder"])
+            if f.endswith(self.properties["rgb"]["suffix"])
         )
-        self.timestep_ids = sorted(self.timestep_ids) # ['000000', '000001', '000002', '000003', ....]
+        self.timestep_ids = sorted(
+            self.timestep_ids
+        )  # ['000000', '000001', '000002', '000003', ....]
         self.timestep_indices = list(range(len(self.timestep_ids)))
 
-        print(f"number of timesteps: {self.num_timesteps}, number of cameras: {self.num_cameras}")
+        print(
+            f"number of timesteps: {self.num_timesteps}, number of cameras: {self.num_cameras}"
+        )
 
         self.items = []
         for fi, timestep_index in enumerate(self.timestep_indices):
@@ -78,35 +81,43 @@ class LumioDataset(Dataset):
                 "suffix": "jpg",
             },
         }
+
     def load_cameras(self, camera_params_path: Optional[pathlib.Path] = None):
-        
         if camera_params_path is None:
-            camera_params_path = self.source_path / "camera_params" / "camera_params.json"
+            camera_params_path = (
+                self.source_path / "camera_params" / "camera_params.json"
+            )
 
         assert camera_params_path.exists()
         param = json.load(open(camera_params_path))
 
-        self.camera_ids =  list(param["world_2_cam"].keys())
+        self.camera_ids = list(param["world_2_cam"].keys())
 
         K = torch.tensor([param["intrinsics"][k] for k in self.camera_ids])  # (N, 3, 3)
 
         if "height" not in param or "width" not in param:
-            raise ValueError("Camera parameters must contain 'height' and 'width' keys.")
+            raise ValueError(
+                "Camera parameters must contain 'height' and 'width' keys."
+            )
         else:
             H, W = param["height"], param["width"]
 
-        w2c = torch.tensor([param["world_2_cam"][k] for k in self.camera_ids])  # (N, 4, 4)
+        w2c = torch.tensor(
+            [param["world_2_cam"][k] for k in self.camera_ids]
+        )  # (N, 4, 4)
         R = w2c[..., :3, :3]
         T = w2c[..., :3, 3]
 
         orientation = R.transpose(-1, -2)  # (N, 3, 3)
         location = R.transpose(-1, -2) @ -T[..., None]  # (N, 3, 1)
 
-        orientation, K = camera.convert_camera_convention(
-                self.camera_convention_conversion, orientation, K, H, W
-            )
+        orientation, K = convert_camera_convention(
+            self.camera_convention_conversion, orientation, K, H, W
+        )
 
-        c2w = torch.cat([orientation, location], dim=-1)  # camera-to-world transformation
+        c2w = torch.cat(
+            [orientation, location], dim=-1
+        )  # camera-to-world transformation
 
         if self.target_extrinsic_type == "w2c":
             R = orientation.transpose(-1, -2)
@@ -116,7 +127,9 @@ class LumioDataset(Dataset):
         elif self.target_extrinsic_type == "c2w":
             extrinsic = c2w
         else:
-            raise NotImplementedError(f"Unknown extrinsic type: {self.target_extrinsic_type}")
+            raise NotImplementedError(
+                f"Unknown extrinsic type: {self.target_extrinsic_type}"
+            )
 
         # print("W, H:", W, H)
         # print("intrinsic:", K)
@@ -124,8 +137,10 @@ class LumioDataset(Dataset):
         print("Successfully loaded camera parameters from", camera_params_path)
         self.camera_params = {}
         for i, camera_id in enumerate(self.camera_ids):
-            self.camera_params[camera_id] = {"intrinsic": K[i], "extrinsic": extrinsic[i]}
-
+            self.camera_params[camera_id] = {
+                "intrinsic": K[i],
+                "extrinsic": extrinsic[i],
+            }
 
     def get_property_path(
         self,
@@ -145,8 +160,9 @@ class LumioDataset(Dataset):
 
         if self.num_cameras > 1:
             if camera_id is None:
-                assert (
-                    index is not None), "index is required when camera_id is not provided."
+                assert index is not None, (
+                    "index is required when camera_id is not provided."
+                )
                 camera_id = self.items[index]["camera_id"]
             if "cam_id_prefix" in p:
                 camera_id = p["cam_id_prefix"] + camera_id
@@ -155,7 +171,9 @@ class LumioDataset(Dataset):
 
         if per_timestep:
             if timestep_id is None:
-                assert index is not None, "index is required when timestep_id is not provided."
+                assert index is not None, (
+                    "index is required when timestep_id is not provided."
+                )
                 timestep_id = self.items[index]["timestep_id"]
             if len(camera_id) > 0:
                 path /= f"{camera_id}_{timestep_id}.{suffix}"
@@ -170,11 +188,10 @@ class LumioDataset(Dataset):
         return path
 
     def apply_transforms(self, item):
-
         if self.background_color is not None:
-            assert (
-                "alpha_map" in item
-            ), "'alpha_map' is required to apply background color."
+            assert "alpha_map" in item, (
+                "'alpha_map' is required to apply background color."
+            )
             fg = item["rgb"]
             if self.background_color == "white":
                 bg = np.ones_like(fg) * 255
@@ -194,13 +211,11 @@ class LumioDataset(Dataset):
             if "alpha_map" in item:
                 item["alpha_map"] = F.to_tensor(item["alpha_map"])
 
-
         return item
-
 
     def __len__(self):
         return len(self.camera_ids)
-    
+
     def __getitem__(self, idx):
         item = deepcopy(self.items[idx])
 

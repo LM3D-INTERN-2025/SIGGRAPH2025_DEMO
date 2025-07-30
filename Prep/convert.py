@@ -91,7 +91,6 @@ def convert(input_dir, out_dir, width, height, image_type):
         out_dir,
     )
 
-
     logger.info("DONE!")
 
 

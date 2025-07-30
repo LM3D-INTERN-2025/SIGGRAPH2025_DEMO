@@ -221,3 +221,12 @@ class OrbitCamera:
         # pan in camera coordinate system (careful on the sensitivity!)
         d = np.array([dx, -dy, dz])  # the y axis is flipped
         self.look_at += 2 * self.rot.as_matrix()[:3, :3] @ d * self.radius / self.image_height * math.tan(np.radians(self.fovy) / 2)
+
+
+def construct_intrinsics(fx, fy, cx, cy):
+    K = np.eye(3, dtype=np.float32)
+    K[0, 0] = fx
+    K[1, 1] = fy
+    K[0, 2] = cx
+    K[1, 2] = cy
+    return K
