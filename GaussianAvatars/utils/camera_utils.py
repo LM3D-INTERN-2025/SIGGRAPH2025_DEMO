@@ -41,6 +41,7 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                 FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
+                cx=cam_info.cx, cy=cam_info.cy, 
                 image_width=image_width, image_height=image_height,
                 bg=cam_info.bg, 
                 image=cam_info.image, 

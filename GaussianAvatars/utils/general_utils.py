@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
+import json
 import torch
 import sys
 from datetime import datetime
@@ -147,4 +149,4 @@ def save_config(model, opt, pipe):
     with open(config_path, 'w+') as f:
         json.dump(config_dict, f, indent=4)
     print(f"Configuration saved to {config_path}")
-    
+

@@ -20,6 +20,8 @@ from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import interp1d
 import matplotlib
+import time
+import math
 
 from utils.viewer_utils import Mini3DViewer, Mini3DViewerConfig
 from gaussian_renderer import GaussianModel, FlameGaussianModel
@@ -43,10 +45,22 @@ class Config(Mini3DViewerConfig):
     """Camera convention"""
     point_path: Optional[Path] = None
     """Path to the gaussian splatting file"""
+    ####
+    teeth_path: Optional[Path] = None
+    """Path to the gaussian splatting teeth file"""
+    eye_path: Optional[Path] = None
+    """Path to the gaussian splatting eye file"""
+    extra_path: Optional[Path] = None
+    """Path to the gaussian splatting extra point file"""
+    texture_path: Optional[Path] = Path("/home/pim/VHAP/asset/flame/tex_mean_painted.png")
+    """Path to the texture file"""
+    coord: Literal["normal", "bary"] = "bary"
+    ####
     motion_path: Optional[Path] = None
     """Path to the motion file (npz)"""
-    sh_degree: int = 3
+    sh_degree: int = 1
     """Spherical Harmonics degree"""
+    # background_color: tuple[float, float, float] = (1., 1., 1.)
     background_color: tuple[float, float, float] = (1., 1., 1.)
     """default GUI background color"""
     save_folder: Path = Path("./viewer_output")
@@ -94,23 +108,28 @@ class LocalViewer(Mini3DViewer):
             dpg.configure_item("_slider_timestep", max_value=self.num_timesteps - 1)
 
             self.gaussians.select_mesh_by_timestep(self.timestep)
+        
+        self.cfg.background_color = torch.tensor(self.cfg.background_color).cuda()
 
     def init_gaussians(self):
         # load gaussians
         if (Path(self.cfg.point_path).parent / "flame_param.npz").exists():
-            self.gaussians = FlameGaussianModel(self.cfg.sh_degree)
+            self.gaussians = FlameGaussianModel(self.cfg.sh_degree, self.cfg.coord,painted_tex_path=self.cfg.texture_path)
         else:
-            self.gaussians = GaussianModel(self.cfg.sh_degree)
+            self.gaussians = GaussianModel(self.cfg.sh_degree, self.cfg.coord)
 
         selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['back_half_2', 'teeth'])
         # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['eye_region'])
         # # selected_fid = self.gaussians.flame_model.mask.get_fid_by_region(['right_half'])
+
         # unselected_fid = self.gaussians.flame_model.mask.get_fid_except_fids(selected_fid)
         # unselected_fid = []
         
         if self.cfg.point_path is not None:
             if self.cfg.point_path.exists():
-                self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=selected_fid)
+                # self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=unselected_fid)
+                self.gaussians.load_ply(self.cfg.point_path, has_target=False, motion_path=self.cfg.motion_path, disable_fid=unselected_fid, teeth_path=self.cfg.teeth_path, eye_path=self.cfg.eye_path, extra_path=self.cfg.extra_path)
+
             else:
                 raise FileNotFoundError(f'{self.cfg.point_path} does not exist.')
 
@@ -363,7 +382,7 @@ class LocalViewer(Mini3DViewer):
             # scaling_modifier slider
             def callback_set_scaling_modifier(sender, app_data):
                 self.need_update = True
-            dpg.add_slider_float(label="Scale modifier", min_value=0, max_value=1, format="%.2f", width=200, default_value=1, callback=callback_set_scaling_modifier, tag="_slider_scaling_modifier")
+            dpg.add_slider_float(label="Scale modifier", min_value=0, max_value=2, format="%.2f", width=200, default_value=1, callback=callback_set_scaling_modifier, tag="_slider_scaling_modifier")
 
             # fov slider
             def callback_set_fovy(sender, app_data):
@@ -401,7 +420,7 @@ class LocalViewer(Mini3DViewer):
             #     self.need_update = True
             # dpg.add_color_edit((self.bg_color*255).tolist(), label="Background Color", width=200, no_alpha=True, callback=callback_change_bg)
 
-            # # near slider
+            # near slider
             # def callback_set_near(sender, app_data):
             #     self.cam.znear = app_data
             #     self.need_update = True
@@ -623,33 +642,52 @@ class LocalViewer(Mini3DViewer):
         print("Running LocalViewer...")
 
         while dpg.is_dearpygui_running():
-
+            # for rainbow bg :P
+            self.cfg.background_color = torch.tensor([math.sin(time.time()*0.1),math.sin(time.time()*0.2),math.sin(time.time()*0.3)]).cuda()
             if self.need_update or self.playing:
                 cam = self.prepare_camera()
 
                 if dpg.get_value("_checkbox_show_splatting"):
                     # rgb
-                    rgb_splatting = render(cam, self.gaussians, self.cfg.pipeline, torch.tensor(self.cfg.background_color).cuda(), scaling_modifier=dpg.get_value("_slider_scaling_modifier"))["render"].permute(1, 2, 0).contiguous()
-
+                    rgb_splatting = render(cam, self.gaussians, self.cfg.pipeline, self.cfg.background_color.clone().detach().cuda(), scaling_modifier=dpg.get_value("_slider_scaling_modifier"))["render"].permute(1, 2, 0).contiguous()
+                    # rgb_splatting = render(cam, self.gaussians, self.cfg.pipeline, torch.tensor(self.cfg.background_color).cuda())["render"].permute(1, 2, 0).contiguous()
+                    background_color = torch.tensor([0., 0., 0.]).cuda()
+                    override_color = torch.ones_like(self.gaussians._xyz).cuda()
+                    # alpha_splatting = render(cam, self.gaussians, self.cfg.pipeline, background_color, override_color=override_color)["render"].permute(1, 2, 0).contiguous()
+                    alpha_splatting = render(cam, self.gaussians, self.cfg.pipeline, background_color, override_color=override_color, scaling_modifier=dpg.get_value("_slider_scaling_modifier"))["render"].permute(1, 2, 0).contiguous()
+                    alpha_splatting = alpha_splatting[:, :, :1].clone().detach()
+                    filter_zero = (alpha_splatting == 0.) * 1.
+                    alpha2 = filter_zero + alpha_splatting.clone().detach()
+                    rgb_splatting = (rgb_splatting.clone().detach() - self.cfg.background_color * (1 - alpha_splatting)) / (alpha2)  # remove background color
                     # opacity
+                    ####
                     # override_color = torch.ones_like(self.gaussians._xyz).cuda()
                     # background_color = torch.tensor(self.cfg.background_color).cuda() * 0
                     # rgb_splatting = render(cam, self.gaussians, self.cfg.pipeline, background_color, scaling_modifier=dpg.get_value("_slider_scaling_modifier"), override_color=override_color)["render"].permute(1, 2, 0).contiguous()
+                    # print("debug color:", override_color.shape, override_color)
 
                 if self.gaussians.binding is not None and dpg.get_value("_checkbox_show_mesh"):
-                    out_dict = self.mesh_renderer.render_from_camera(self.gaussians.verts, self.gaussians.faces, cam, face_colors=self.face_colors)
+                    # print("debug tex", self.gaussians.flame_model.tex_painted.shape)
+                    # selected_fid = self.gaussians.binding_counter > 100
+                    # mask = self.gaussians.flame_model.mask.get_fid_by_region(['back_head_2'])
+                    selected_fid = torch.ones(len(self.gaussians.faces), dtype = bool)
+                    # selected_fid[mask] = False
+                    # print("debug mask", mask.shape, self.gaussians.faces.shape, selected_fid.shape, self.gaussians.faces[selected_fid].shape)
+                    out_dict = self.mesh_renderer.render_from_camera(self.gaussians.verts, self.gaussians.faces[selected_fid], self.gaussians.flame_model.verts_uvs, self.gaussians.flame_model.textures_idx[selected_fid], self.gaussians.flame_model._tex_painted, self.gaussians.flame_model._tex_alpha, cam, face_colors=self.face_colors)
 
                     rgba_mesh = out_dict['rgba'].squeeze(0)  # (H, W, C)
-                    rgb_mesh = rgba_mesh[:, :, :3]
-                    alpha_mesh = rgba_mesh[:, :, 3:]
-                    mesh_opacity = self.mesh_color[3:].cuda()
+                    rgb_mesh = rgba_mesh[:, :, :3].clone().detach()
+                    alpha_mesh = rgba_mesh[:, :, 3:].clone().detach()
+                    # mesh_opacity = self.mesh_color[3:].cuda()
 
                 if dpg.get_value("_checkbox_show_splatting") and dpg.get_value("_checkbox_show_mesh"):
-                    rgb = rgb_mesh * alpha_mesh * mesh_opacity  + rgb_splatting * (alpha_mesh * (1 - mesh_opacity) + (1 - alpha_mesh))
+                    rgb = rgb_splatting * alpha_splatting + rgb_mesh * alpha_mesh * (1 - alpha_splatting) + self.cfg.background_color.clone().detach().cuda() * (1 - alpha_splatting - (1 - alpha_splatting )*alpha_mesh)
+
                 elif dpg.get_value("_checkbox_show_splatting") and not dpg.get_value("_checkbox_show_mesh"):
-                    rgb = rgb_splatting
+                    # rgb = torch.tensor([1.,1.,1.]).cuda() * alpha_splatting + torch.tensor(self.cfg.background_color).cuda() * (1. - alpha_splatting)
+                    rgb = rgb_splatting * alpha_splatting + self.cfg.background_color.clone().detach().cuda() * (1. - alpha_splatting)
                 elif not dpg.get_value("_checkbox_show_splatting") and dpg.get_value("_checkbox_show_mesh"):
-                    rgb = rgb_mesh
+                    rgb = rgb_mesh * alpha_mesh + self.cfg.background_color.clone().detach().cuda() * (1. - alpha_mesh)
                 else:
                     rgb = torch.ones([self.H, self.W, 3])
 

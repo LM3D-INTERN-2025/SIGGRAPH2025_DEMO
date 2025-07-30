@@ -35,7 +35,12 @@ def ssim(img1, img2, window_size=11, size_average=True):
     window = create_window(window_size, channel)
 
     if img1.is_cuda:
-        window = window.cuda(img1.get_device())
+        try:
+            # window = window.cuda(0)
+            window = window.cuda(img1.get_device())
+        except:
+            print("debug loss error:", img1.get_device(), img1.shape, img2.get_device(), img2.shape, window.get_device(), window.shape)
+            sys.exit(1)
     window = window.type_as(img1)
 
     return _ssim(img1, img2, window, window_size, channel, size_average)

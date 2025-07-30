@@ -19,6 +19,9 @@
 
 from .lbs import lbs, vertices2landmarks, blend_shapes, vertices2joints
 
+from pathlib import Path
+from PIL import Image
+import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import numpy as np
@@ -31,7 +34,9 @@ except ImportError:
 
 FLAME_MESH_PATH = "flame_model/assets/flame/head_template_mesh.obj"
 FLAME_LMK_PATH = "flame_model/assets/flame/landmark_embedding_with_eyes.npy"
-
+# FLAME_PAINTED_TEX_PATH = "/mnt/nas/pim/diffuse_albedo2.png"
+# FLAME_PAINTED_TEX_PATH = "/mnt/nas/pim/output2/woman1_seq1_v12_filter_v25_test_texture/point_cloud/iteration_2000/flame_texture.png"
+FLAME_PAINTED_TEX_PATH = Path("/home/pim/GaussianAvatars/flame_model/assets/flame/tex_mean_painted.png")
 # to be downloaded from https://flame.is.tue.mpg.de/download.php
 # FLAME_MODEL_PATH = "flame_model/assets/flame/generic_model.pkl"  # FLAME 2020
 FLAME_MODEL_PATH = "flame_model/assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)
@@ -87,6 +92,7 @@ class FlameHead(nn.Module):
         flame_model_path=FLAME_MODEL_PATH,
         flame_lmk_embedding_path=FLAME_LMK_PATH,
         flame_template_mesh_path=FLAME_MESH_PATH,
+        painted_tex_path=FLAME_PAINTED_TEX_PATH,
         include_mask=True,
         add_teeth=True,
     ):
@@ -156,6 +162,23 @@ class FlameHead(nn.Module):
         vertex_uvs = aux.verts_uvs
         face_uvs_idx = faces.textures_idx  # index into verts_uvs
 
+        self.tex_size = 2048
+        painted_tex_path = Path(painted_tex_path)
+        tex_painted = torch.tensor(np.array(Image.open(painted_tex_path))[:, :, :3]) / 255
+        tex_painted = tex_painted[None, ...].permute(0, 3, 1, 2)
+        if tex_painted.shape[-1] != self.tex_size or tex_painted.shape[-2] != self.tex_size:
+            tex_painted = F.interpolate(tex_painted, [self.tex_size, self.tex_size])
+        # self.register_buffer("_tex_painted", tex_painted)
+        # tex_painted = torch.zeros_like(tex_painted)
+        self._tex_painted = nn.Parameter(tex_painted.requires_grad_(True))
+        self.input_texture = tex_painted.clone()
+        alpha_tex_path = painted_tex_path.parent / "flame_texture_alpha.png"
+        if alpha_tex_path.exists():
+            tex_alpha = torch.tensor(np.array(Image.open(alpha_tex_path))[:, :, :3]) / 255
+            tex_alpha = tex_alpha[None, ...].permute(0, 3, 1, 2)
+            self._tex_alpha = nn.Parameter(tex_alpha[:,0:1,:,:].requires_grad_(True))
+        else:
+            self._tex_alpha = nn.Parameter(torch.zeros_like(tex_painted[:,0:1,:,:]).requires_grad_(True))
         # create uvcoords per face --> this is what you can use for uv map rendering
         # range from -1 to 1 (-1, -1) = left top; (+1, +1) = right bottom
         # pad 1 to the end
@@ -167,7 +190,7 @@ class FlameHead(nn.Module):
         face_uv_coords = face_vertices(vertex_uvs[None], face_uvs_idx[None])[0]
         self.register_buffer("face_uvcoords", face_uv_coords, persistent=False)
         self.register_buffer("faces", faces.verts_idx, persistent=False)
-
+        # self.register_buffer("_tex_painted", self._tex_painted)
         self.register_buffer("verts_uvs", aux.verts_uvs, persistent=False)
         self.register_buffer("textures_idx", faces.textures_idx, persistent=False)
         # Check our template mesh faces match those of FLAME:
@@ -746,6 +769,7 @@ class FlameMask(nn.Module):
             ])
         )
 
+        # inside eye ball = 3929, 3930
         self.v.register_buffer(
             "left_eyelid",  # 30 vertices
             torch.tensor([
@@ -791,6 +815,16 @@ class FlameMask(nn.Module):
             ])
         )
 
+        self.v.register_buffer(
+            "back_head",
+            torch.tensor([8, 9, 10, 11, 12, 13, 14, 15, 109, 110, 111, 112, 193, 194, 195, 196, 219, 220, 221, 222, 333, 334, 445, 447, 539, 540, 553, 558, 577, 578, 579, 580, 645, 648, 736, 737, 740, 745, 746, 747, 748, 886, 887, 888, 889, 1016, 1017, 1018, 1148, 1149, 1298, 1299, 1308, 1309, 1310, 1312, 1322, 1323, 1324, 1325, 1326, 1423, 1424, 1454, 1455, 1456, 1457, 1470, 1493, 1494, 1653, 1654, 1655, 1857, 1858, 1867, 1879, 1886, 1887, 1894, 1896, 1897, 1903, 1932, 1933, 1946, 1947, 1948, 1949, 1950, 1965, 1966, 1967, 1968, 1969, 1970, 1991, 1992, 2005, 2006, 2007, 2008, 2025, 2026, 2029, 2033, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2115, 2144, 2147, 2151, 2162, 2218, 2219, 2222, 2223, 2224, 2225, 2226, 2374, 2375, 2376, 2474, 2475, 2476, 2477, 2480, 2481, 2482, 2483, 2484, 2560, 2561, 2591, 2592, 2593, 2594, 2607, 2629, 2630, 2770, 2771, 2772, 2950, 2961, 2964, 2965, 2972, 2974, 2975, 2981, 3010, 3011, 3012, 3013, 3014, 3025, 3026, 3027, 3028, 3029, 3030, 3047, 3048, 3065, 3066, 3067, 3069, 3071, 3072, 3073, 3074, 3075, 3076, 3142, 3174, 3184, 3185, 3186, 3187, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3208, 3209, 3219, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3259, 3260, 3261, 3262, 3266, 3267, 3272, 3273, 3274, 3275, 3279, 3280, 3282, 3290, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3311, 3312, 3322, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3345, 3346, 3347, 3348, 3349, 3350, 3358, 3359, 3360, 3361, 3365, 3366, 3371, 3372, 3373, 3374, 3375, 3510, 3517, 3522, 3523, 3529, 3530, 3535, 3536, 3539, 3545, 3557, 3562, 3566, 3569, 3570, 3574])
+        )
+
+        self.v.register_buffer(
+            "back_head_2",
+            torch.tensor([8, 9, 10, 11, 12, 13, 14, 15, 109, 110, 111, 112, 193, 194, 195, 196, 219, 220, 221, 222, 333, 334, 445, 447, 539, 540, 553, 558, 577, 578, 579, 580, 633, 644, 645, 648, 736, 737, 740, 745, 746, 747, 748, 886, 887, 888, 889, 1016, 1017, 1018, 1148, 1149, 1298, 1299, 1308, 1309, 1310, 1312, 1322, 1323, 1324, 1325, 1326, 1423, 1424, 1454, 1455, 1456, 1457, 1470, 1493, 1494, 1653, 1654, 1655, 1656, 1857, 1858, 1867, 1878, 1879, 1886, 1887, 1894, 1896, 1897, 1903, 1932, 1933, 1946, 1947, 1948, 1949, 1950, 1965, 1966, 1967, 1968, 1969, 1970, 1991, 1992, 2005, 2006, 2007, 2008, 2025, 2026, 2029, 2033, 2035, 2036, 2037, 2038, 2039, 2040, 2041, 2115, 2130, 2133, 2144, 2147, 2151, 2162, 2218, 2219, 2222, 2223, 2224, 2225, 2226, 2374, 2375, 2376, 2474, 2475, 2476, 2477, 2480, 2481, 2482, 2483, 2484, 2560, 2561, 2591, 2592, 2593, 2594, 2607, 2629, 2630, 2770, 2771, 2772, 2773, 2950, 2960, 2961, 2964, 2965, 2972, 2974, 2975, 2981, 3010, 3011, 3012, 3013, 3014, 3025, 3026, 3027, 3028, 3029, 3030, 3047, 3048, 3065, 3066, 3067, 3069, 3071, 3072, 3073, 3074, 3075, 3076, 3142, 3174, 3184, 3185, 3186, 3187, 3192, 3193, 3194, 3195, 3196, 3197, 3198, 3199, 3200, 3201, 3208, 3209, 3216, 3217, 3218, 3219, 3221, 3222, 3223, 3224, 3225, 3226, 3227, 3228, 3229, 3230, 3231, 3232, 3233, 3234, 3235, 3236, 3237, 3238, 3239, 3240, 3244, 3245, 3246, 3247, 3248, 3249, 3250, 3251, 3252, 3255, 3256, 3257, 3258, 3259, 3260, 3261, 3262, 3266, 3267, 3271, 3272, 3273, 3274, 3275, 3279, 3280, 3282, 3284, 3285, 3287, 3289, 3290, 3295, 3296, 3297, 3298, 3299, 3300, 3301, 3302, 3303, 3304, 3311, 3312, 3319, 3320, 3321, 3322, 3324, 3325, 3326, 3327, 3328, 3329, 3330, 3331, 3332, 3333, 3334, 3335, 3336, 3337, 3338, 3339, 3340, 3341, 3345, 3346, 3347, 3348, 3349, 3350, 3351, 3354, 3355, 3356, 3357, 3358, 3359, 3360, 3361, 3365, 3366, 3370, 3371, 3372, 3373, 3374, 3375, 3377, 3379, 3510, 3517, 3522, 3523, 3525, 3529, 3530, 3535, 3536, 3539, 3545, 3557, 3558, 3562, 3566, 3569, 3570, 3574, 3736, 3768, 3785, 3879, 3897])
+        )
+
         # remove the intersection with neck from scalp and get the region for hair
         face_and_neck = torch.cat([self.v.face, self.v.neck]).unique()
         # get the intersection between scalp and face_and_neck
@@ -806,6 +840,7 @@ class FlameMask(nn.Module):
         self.v.register_buffer("irises", torch.cat([self.v.right_iris, self.v.left_iris]))
         self.v.register_buffer("left_eye", torch.cat([self.v.left_eye_region, self.v.left_eyeball]))
         self.v.register_buffer("right_eye", torch.cat([self.v.right_eye_region, self.v.right_eyeball]))
+        self.v.register_buffer("eyes", torch.cat([self.v.left_eye_region, self.v.left_eyeball, self.v.right_eye_region, self.v.right_eyeball]))
         self.v.register_buffer("eyelids", torch.cat([self.v.left_eyelid, self.v.right_eyelid]))
         self.v.register_buffer("lip_inside_ring", torch.cat([self.v.lip_inside_ring_upper, self.v.lip_inside_ring_lower, torch.tensor([1594, 2730])]))
 

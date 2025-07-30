@@ -44,9 +44,11 @@ class GaussianModel:
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self, sh_degree : int):
+    def __init__(self, sh_degree : int, coord):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
+        ####
+        # self.max_sh_degree = 1  
         self._xyz = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
@@ -60,6 +62,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
+        self.coord = coord
 
         # Toyota Motor Europe NV/SA and its affiliated companies retain all intellectual property and proprietary rights in and to the following code lines and related documentation. Any commercial use, reproduction, disclosure or distribution of these code lines and related documentation without an express license agreement from Toyota Motor Europe NV/SA is strictly prohibited.
         # for binding GaussianModel to a mesh
@@ -120,6 +123,10 @@ class GaussianModel:
                 self.select_mesh_by_timestep(0)
             
             scaling = self.scaling_activation(self._scaling)
+            tmp = scaling * self.face_scaling[self.binding]
+            # TODO optimize
+            # print("debug scaling", tmp.shape, tmp.dtype)
+            # assert False, "exit jaa"
             return scaling * self.face_scaling[self.binding]
     
     @property
@@ -166,8 +173,28 @@ class GaussianModel:
             return (b0 + b1 + b2)# (PC, 3)
 
             
-            xyz = torch.bmm(self.face_orien_mat[self.binding], self._xyz[..., None]).squeeze(-1)
-            return xyz * self.face_scaling[self.binding] + self.face_center[self.binding]
+            if self.coord == "bary":
+                verts = self.verts # (B, V, 3)
+                faces = self.flame_model.faces # (F, 3)
+                vert_binding = faces[self.binding] # (PC, 3)
+                verts_xyz = verts[:, vert_binding] # (B, PC, 3, 3)
+                bary = self._xyz.clamp(min=0.00001)
+                assert not torch.isnan(bary).any(), "NaN in barycentric coordinates 2"
+                bary = bary/bary.sum(dim=1, keepdim=True) # (PC, 3)
+                # print("debug bary:", bary[...].shape, "\n verts_xyz:", verts_xyz.shape)
+                b0 = bary[:, 0, None] * verts_xyz[0, :, 0, :] # (PC, 3)
+                b1 = bary[:, 1, None] * verts_xyz[0, :, 1, :] # (PC, 3)
+                b2 = bary[:, 2, None] * verts_xyz[0, :, 2, :] # (PC, 3)
+                # print("debug b0:", b0.shape, "\n debug b1:", b1.shape, "\n debug b2:", b2.shape)
+                return (b0 + b1 + b2)# (PC, 3)
+
+            _xyz = torch.tensor(self._xyz.clone(), dtype=torch.float64)
+            face_center = torch.tensor(self.face_center[self.binding].clone(), dtype=torch.float64)
+            face_scaling = torch.tensor(self.face_scaling[self.binding].clone(), dtype=torch.float64)
+            face_orien_mat = torch.tensor(self.face_orien_mat[self.binding].clone(), dtype=torch.float64)
+            
+            xyz = torch.bmm(face_orien_mat, _xyz[..., None]).squeeze(-1)
+            return (xyz * face_scaling + face_center).float()
 
     @property
     def get_features(self):
@@ -177,6 +204,12 @@ class GaussianModel:
     
     @property
     def get_opacity(self):
+        ####
+        # print("debug opacity",self._opacity)
+        # print("debug opacity activation",self.opacity_activation(self._opacity))
+        dbg = self.opacity_activation(self._opacity)
+        dbg = torch.ones_like(self._opacity)
+        # print("debug opacity:", type(dbg),dbg.shape,dbg)
         return self.opacity_activation(self._opacity)
 
     # LM3D : clamp scaling
@@ -194,15 +227,19 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd : Optional[BasicPointCloud], spatial_lr_scale : float):
+    def create_from_pcd(self, pcd : Optional[BasicPointCloud], spatial_lr_scale : float, initial_pc_size):
         self.spatial_lr_scale = spatial_lr_scale
         if pcd == None:
             assert self.binding is not None
             num_pts = self.binding.shape[0]
-            # center of the bary
-            # fused_point_cloud = torch.ones((num_pts, 3)).float().cuda()
-            # randomly generated
-            fused_point_cloud = torch.tensor(np.random.random((num_pts, 3))).float().cuda()
+
+            if self.coord == "bary":
+                fused_point_cloud = torch.ones((num_pts, 3)).float().cuda()
+                fused_point_cloud = torch.tensor(np.random.random((num_pts, 3))).float().cuda()
+
+            else:
+                fused_point_cloud = torch.zeros((num_pts, 3)).float().cuda()
+
 
             fused_color = torch.tensor(np.random.random((num_pts, 3)) / 255.0).float().cuda()
         else:
@@ -211,6 +248,7 @@ class GaussianModel:
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
+            
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
@@ -220,7 +258,9 @@ class GaussianModel:
             dist2 = torch.clamp_min(distCUDA2(self.get_xyz), 0.0000001)
             scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         else:
-            scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda") * 0.05) # LM3D : 0.01 is the initial scale
+
+            scales = torch.log(torch.ones((self.get_xyz.shape[0], 3), device="cuda")* initial_pc_size) # LM3D : 0.01 is the initial scale
+
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -241,15 +281,22 @@ class GaussianModel:
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-
-        l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
-            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
-        ]
+        ####
+        l = []
+        if (training_args.disable_gaussian_splats):
+            l = [
+                {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"}
+            ]
+        else:
+            # print("ok juff")
+            l = [
+                {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+                {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
+                {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+                {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+                {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+                {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
@@ -287,10 +334,46 @@ class GaussianModel:
                 l.append('binding_{}'.format(i))
         return l
 
-    def save_ply(self, path):
+    def save_ply(self, path, opt):
         mkdir_p(os.path.dirname(path))
 
-        xyz = self._xyz.detach().cpu().numpy()
+        if self.coord == "bary":
+            xyz = torch.tensor(self.get_xyz.clone(), dtype=torch.float64)
+            xyz_global = xyz.clone()
+            face_center = torch.tensor(self.face_center[self.binding].clone(), dtype=torch.float64)
+            face_scaling = torch.tensor(self.face_scaling[self.binding].clone(), dtype=torch.float64)
+            face_orien_mat = torch.tensor(self.face_orien_mat[self.binding].clone(), dtype=torch.float64)
+            eps = 1e-9
+            print("debug xyz", torch.all(torch.isfinite(xyz)))
+            assert not torch.isnan(xyz).any(), "NaN in barycentric coordinates 1"
+            tmp = xyz.clone() - face_center
+            assert torch.all(torch.abs(tmp + face_center - xyz_global) < eps), "Barycentric coordinates do not match original xyz coordinates 1"
+            xyz = tmp.clone() / face_scaling
+            
+            print("debug face scale",torch.all(face_scaling > 0.0))
+            assert torch.all(face_scaling > 0.0), "zero in face scaling"
+            assert not (torch.isnan(xyz).any()), "NaN in barycentric coordinates 2"
+            print("debug face scaling", self.face_scaling.shape, self.face_scaling)
+            assert torch.all((face_scaling / face_scaling) == 1.0) , "precision?"
+            tmp2 = tmp  * (face_scaling / face_scaling)
+            assert torch.all(torch.abs(tmp2 - tmp) < eps), "Barycentric coordinates do not match original xyz coordinates 2"
+            tmp = xyz * face_scaling + face_center
+            assert torch.all(torch.abs(tmp - xyz_global) < eps), "Barycentric coordinates do not match original xyz coordinates 3"
+            
+            inv = torch.linalg.inv(face_orien_mat)
+            xyz = torch.bmm(inv, xyz[..., None]).squeeze(-1)
+
+            print("debug type", inv.dtype, xyz.dtype, xyz_global.dtype)
+
+            tmp = torch.bmm(face_orien_mat, xyz[..., None]).squeeze(-1)
+            tmp = tmp * face_scaling + face_center
+            print("debug max error", torch.max(torch.abs(tmp - xyz_global)))
+            assert torch.all(torch.abs(tmp - xyz_global) < eps), "Barycentric coordinates do not match original xyz coordinate 4"
+            
+            xyz = xyz.detach().cpu().numpy()
+        else:
+            xyz = self._xyz.detach().cpu().numpy()
+        
         normals = np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
@@ -311,10 +394,110 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
+        if self.coord == "bary":
+            path = path.replace(".ply", "_bary.ply")
+            uvw = self._xyz.detach().cpu().numpy()
+            elements = np.empty(xyz.shape[0], dtype=dtype_full)
+            attributes = np.concatenate((uvw, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+
+            if self.binding is not None:
+                binding = self.binding.detach().cpu().numpy()
+                attributes = np.concatenate((attributes, binding[:, None]), axis=1)
+
+            elements[:] = list(map(tuple, attributes))
+            el = PlyElement.describe(elements, 'vertex')
+            PlyData([el]).write(path)
+
     def reset_opacity(self):
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
+
+    def union_ply(self, plydata, mask_area=None):
+        xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+                        np.asarray(plydata.elements[0]["y"]),
+                        np.asarray(plydata.elements[0]["z"])),  axis=1)
+        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+        features_dc = np.zeros((xyz.shape[0], 3, 1))
+        features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+        features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+        features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+
+        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+        extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
+        assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
+        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+        for idx, attr_name in enumerate(extra_f_names):
+            features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+
+        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+        scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        for idx, attr_name in enumerate(scale_names):
+            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+        rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+        rots = np.zeros((xyz.shape[0], len(rot_names)))
+        for idx, attr_name in enumerate(rot_names):
+            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+        binding_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("binding")]
+        if len(binding_names) > 0:
+            binding_names = sorted(binding_names, key = lambda x: int(x.split('_')[-1]))
+            binding = np.zeros((xyz.shape[0], len(binding_names)), dtype=np.int32)
+            for idx, attr_name in enumerate(binding_names):
+                binding[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        
+        # print("debug binding:", binding[:,0].shape, self.binding.shape)
+        a_xyz = self._xyz.cpu().detach().numpy()
+        a_features_dc = self._features_dc.transpose(1,2).cpu().detach().numpy()
+        a_features_extra = self._features_rest.transpose(1,2).cpu().detach().numpy()
+        a_opacities = self._opacity.cpu().detach().numpy()
+        a_scales = self._scaling.cpu().detach().numpy()
+        a_rots = self._rotation.cpu().detach().numpy()
+        a_binding = self.binding.cpu().detach().numpy()[..., np.newaxis]
+
+        if mask_area is not None:
+            mask = torch.isin(torch.from_numpy(binding[:,0]), self.flame_model.mask.get_fid_by_region([mask_area]).cpu())
+            # print (mask.shape)
+            mask = mask.cpu()
+            # print("debug mask", mask.shape, xyz.shape, xyz[mask].shape, binding.shape)
+            xyz = xyz[mask]
+            features_dc = features_dc[mask]
+            features_extra = features_extra[mask]
+            opacities = opacities[mask]
+            scales = scales[mask]
+            rots = rots[mask]
+            binding = binding[mask]
+
+            mask2 = torch.isin(torch.from_numpy(a_binding[:,0]), self.flame_model.mask.get_fid_by_region([mask_area]).cpu(),invert = True)
+            a_xyz = a_xyz[mask2]
+            a_features_dc = a_features_dc[mask2]
+            a_features_extra = a_features_extra[mask2]
+            a_opacities = a_opacities[mask2]
+            a_scales = a_scales[mask2]
+            a_rots = a_rots[mask2]
+            a_binding = a_binding[mask2]
+
+        # print("debug feat dc", features_dc.shape)
+        a_xyz = np.append(a_xyz, xyz, axis = 0)
+        a_features_dc = np.append(a_features_dc, features_dc, axis = 0)
+        a_features_extra = np.append(a_features_extra, features_extra, axis = 0)
+        a_opacities = np.append(a_opacities, opacities, axis = 0)
+        a_scales = np.append(a_scales, scales, axis = 0)
+        a_rots = np.append(a_rots, rots, axis = 0)
+        a_binding = np.append(a_binding, binding, axis = 0)
+
+        self._xyz = nn.Parameter(torch.tensor(a_xyz, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._features_dc = nn.Parameter(torch.tensor(a_features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(torch.tensor(a_features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._opacity = nn.Parameter(torch.tensor(a_opacities, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._scaling = nn.Parameter(torch.tensor(a_scales, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._rotation = nn.Parameter(torch.tensor(a_rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self.binding = torch.tensor(a_binding, dtype=torch.int32, device="cuda").squeeze(-1)
 
     def load_ply(self, path, **kwargs):
         plydata = PlyData.read(path)
@@ -350,6 +533,7 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
+
         # LM3D : ------------------------------------------------------------------------------------
         # optional fields
         binding_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("binding")]
@@ -360,93 +544,49 @@ class GaussianModel:
                 binding[:, idx] = np.asarray(plydata.elements[0][attr_name])
             # self.binding = torch.tensor(binding, dtype=torch.int32, device="cuda").squeeze(-1)
 
-        ####
-        print("debug teeth_path", 'teeth_path' in kwargs and kwargs['teeth_path'] is not None)
-        if 'teeth_path' in kwargs and kwargs['teeth_path'] is not None:
-            teeth_plydata = PlyData.read(kwargs['teeth_path'])
-            
-            teeth_xyz = np.stack((np.asarray(teeth_plydata.elements[0]["x"]),
-                            np.asarray(teeth_plydata.elements[0]["y"]),
-                            np.asarray(teeth_plydata.elements[0]["z"])),  axis=1)
-            teeth_opacities = np.asarray(teeth_plydata.elements[0]["opacity"])[..., np.newaxis]
-            teeth_features_dc = np.zeros((teeth_xyz.shape[0], 3, 1))
-            print("debug teeth", teeth_xyz.shape,teeth_features_dc.shape, np.asarray(teeth_plydata.elements[0]["f_dc_0"]).shape)
-            teeth_features_dc[:, 0, 0] = np.asarray(teeth_plydata.elements[0]["f_dc_0"])
-            teeth_features_dc[:, 1, 0] = np.asarray(teeth_plydata.elements[0]["f_dc_1"])
-            teeth_features_dc[:, 2, 0] = np.asarray(teeth_plydata.elements[0]["f_dc_2"])
-
-            teeth_extra_f_names = [p.name for p in teeth_plydata.elements[0].properties if p.name.startswith("f_rest_")]
-            teeth_extra_f_names = sorted(teeth_extra_f_names, key = lambda x: int(x.split('_')[-1]))
-            assert len(teeth_extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
-            teeth_features_extra = np.zeros((teeth_xyz.shape[0], len(teeth_extra_f_names)))
-            for idx, attr_name in enumerate(teeth_extra_f_names):
-                teeth_features_extra[:, idx] = np.asarray(teeth_plydata.elements[0][attr_name])
-            # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-            teeth_features_extra = teeth_features_extra.reshape((teeth_features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
-
-            teeth_scale_names = [p.name for p in teeth_plydata.elements[0].properties if p.name.startswith("scale_")]
-            teeth_scale_names = sorted(teeth_scale_names, key = lambda x: int(x.split('_')[-1]))
-            teeth_scales = np.zeros((teeth_xyz.shape[0], len(teeth_scale_names)))
-            for idx, attr_name in enumerate(teeth_scale_names):
-                teeth_scales[:, idx] = np.asarray(teeth_plydata.elements[0][attr_name])
-
-            teeth_rot_names = [p.name for p in teeth_plydata.elements[0].properties if p.name.startswith("rot")]
-            teeth_rot_names = sorted(teeth_rot_names, key = lambda x: int(x.split('_')[-1]))
-            teeth_rots = np.zeros((teeth_xyz.shape[0], len(teeth_rot_names)))
-            for idx, attr_name in enumerate(teeth_rot_names):
-                teeth_rots[:, idx] = np.asarray(teeth_plydata.elements[0][attr_name])
-
-            teeth_binding_names = [p.name for p in teeth_plydata.elements[0].properties if p.name.startswith("binding")]
-            if len(teeth_binding_names) > 0:
-                teeth_binding_names = sorted(teeth_binding_names, key = lambda x: int(x.split('_')[-1]))
-                teeth_binding = np.zeros((teeth_xyz.shape[0], len(teeth_binding_names)), dtype=np.int32)
-                for idx, attr_name in enumerate(teeth_binding_names):
-                    teeth_binding[:, idx] = np.asarray(teeth_plydata.elements[0][attr_name])
-            
-            # print("debug binding:", teeth_binding[:,0].shape, self.binding.shape)
-            mask = torch.isin(torch.from_numpy(teeth_binding[:,0]), self.flame_model.mask.get_fid_by_region(['teeth']).cpu())
-            print (mask.shape)
-            mask = mask.cpu()
-            print("debug mask", mask.shape, xyz.shape, teeth_xyz[mask].shape, teeth_binding.shape)
-            teeth_xyz = teeth_xyz[mask]
-            teeth_features_dc = teeth_features_dc[mask]
-            teeth_features_extra = teeth_features_extra[mask]
-            teeth_opacities = teeth_opacities[mask]
-            teeth_scales = teeth_scales[mask]
-            teeth_rots = teeth_rots[mask]
-            teeth_binding = teeth_binding[mask]
-
-            mask2 = torch.isin(torch.from_numpy(binding[:,0]), self.flame_model.mask.get_fid_by_region(['teeth']).cpu(),invert = True)
-            xyz = xyz[mask2]
-            features_dc = features_dc[mask2]
-            features_extra = features_extra[mask2]
-            opacities = opacities[mask2]
-            scales = scales[mask2]
-            rots = rots[mask2]
-            binding = binding[mask2]
-
-            # print("debug feat dc", features_dc.shape)
-            xyz = np.append(xyz, teeth_xyz, axis = 0)
-            features_dc = np.append(features_dc, teeth_features_dc, axis = 0)
-            features_extra = np.append(features_extra, teeth_features_extra, axis = 0)
-            opacities = np.append(opacities, teeth_opacities, axis = 0)
-            scales = np.append(scales, teeth_scales, axis = 0)
-            rots = np.append(rots, teeth_rots, axis = 0)
-            binding = np.append(binding, teeth_binding, axis = 0)
-            # print("debug feat dc", features_dc.shape)
-        # LM3D : ------------------------------------------------------------------------------------
-
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-
+            
         self.active_sh_degree = self.max_sh_degree
 
         if len(binding_names) > 0:
             self.binding = torch.tensor(binding, dtype=torch.int32, device="cuda").squeeze(-1)
+            
+        print("debug extra_path", 'extra_path' in kwargs and kwargs['extra_path'] is not None)
+        if 'extra_path' in kwargs and kwargs['extra_path'] is not None:
+            extra_plydata = PlyData.read(kwargs['extra_path'])
+            self.union_ply(extra_plydata)
+
+        print("debug teeth_path", 'teeth_path' in kwargs and kwargs['teeth_path'] is not None)
+        if 'teeth_path' in kwargs and kwargs['teeth_path'] is not None:
+            teeth_plydata = PlyData.read(kwargs['teeth_path'])
+            self.union_ply(teeth_plydata, 'teeth')
+            
+        print("debug eye_path", 'eye_path' in kwargs and kwargs['eye_path'] is not None)
+        if 'eye_path' in kwargs and kwargs['eye_path'] is not None:
+            eye_plydata = PlyData.read(kwargs['eye_path'])
+            self.union_ply(eye_plydata, 'eyes')
+
+        ####
+        print("debug train", 'is_training' in kwargs and kwargs['is_training'] is True)
+        if 'is_training' in kwargs and kwargs['is_training'] is True:
+            self.xyz_gradient_accum = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+            self.denom = torch.zeros((self._xyz.shape[0], 1), device="cuda")
+            self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
+            num_pts = self._xyz.shape[0]
+            fused_color = torch.tensor(np.random.random((num_pts, 3)) / 255.0).float().cuda()
+            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            features[:, :3, 0 ] = fused_color
+            features[:, 3:, 1:] = 0.0
+            self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+            self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+
+        self.binding_counter = torch.bincount(self.binding)
+        
 
         ####
         print("debug train", 'is_training' in kwargs and kwargs['is_training'] is True)
@@ -465,6 +605,9 @@ class GaussianModel:
             # print(kwargs)
 
     def replace_tensor_to_optimizer(self, tensor, name):
+        ####
+        # print("debug tensor:",tensor.shape)
+        ####
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
@@ -666,5 +809,6 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        # print("debug viewspace_point_tensor",  viewspace_point_tensor.grad)
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1

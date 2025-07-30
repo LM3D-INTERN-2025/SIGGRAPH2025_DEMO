@@ -73,7 +73,8 @@ def render_set(dataset : ModelParams, name, iteration, views, gaussians, pipelin
         rendering = render(view, gaussians, pipeline, background)["render"]
         gt = view.original_image[0:3, :, :]
         if render_mesh:
-            out_dict = mesh_renderer.render_from_camera(gaussians.verts, gaussians.faces, view)
+            ####
+            out_dict = mesh_renderer.render_from_camera(gaussians.verts, gaussians.faces, gaussians.flame_model.verts_uvs, gaussians.flame_model.textures_idx, gaussians.flame_model._tex_painted, gaussians.flame_model._tex_alpha, view)
             rgba_mesh = out_dict['rgba'].squeeze(0).permute(2, 0, 1)  # (C, W, H)
             rgb_mesh = rgba_mesh[:3, :, :]
             alpha_mesh = rgba_mesh[3:, :, :]
@@ -105,12 +106,16 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
     with torch.no_grad():
         if dataset.bind_to_mesh:
             # gaussians = FlameGaussianModel(dataset.sh_degree, dataset.disable_flame_static_offset)
-            gaussians = FlameGaussianModel(dataset.sh_degree)
+            gaussians = FlameGaussianModel(dataset.sh_degree, dataset.coord)
         else:
-            gaussians = GaussianModel(dataset.sh_degree)
+            gaussians = GaussianModel(dataset.sh_degree, dataset.coord)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
 
-        bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
+        # bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
+        ####
+        bg_color = [0,0,0] if dataset.white_background else [0, 0, 0]
+        # bg_color = [0.1725,0.3725,0.4588] if dataset.white_background else [0, 0, 0]
+        # bg_color = [0.2824,0.4549,0.5294] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if dataset.target_path != "":

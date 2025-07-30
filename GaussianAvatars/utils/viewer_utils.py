@@ -71,7 +71,7 @@ def projection_from_intrinsics(K: np.ndarray, image_size: Tuple[int], near: floa
 
 
 class OrbitCamera:
-    def __init__(self, W, H, r=2, fovy=60, znear=0.01, zfar=10, convention: Literal["opengl", "opencv"]="opengl", save_path='camera.json'):
+    def __init__(self, W, H, r=2, fovy=60, znear=1e-10, zfar=100., convention: Literal["opengl", "opencv"]="opengl", save_path='camera.json'):
         self.image_width = W
         self.image_height = H
         self.radius_default = r
