@@ -678,7 +678,7 @@ class LocalViewer(Mini3DViewer):
                             dpg.set_value("_slider_timestep", self.timestep)
                             self.gaussians.select_mesh_by_timestep(self.timestep)
                             
-                            time.sleep(1 / self.cfg.fps)
+                            # time.sleep(1 / self.cfg.fps)
 
                         state_dict = self.get_state_dict_record()
                         self.apply_state_dict(state_dict)

@@ -280,71 +280,64 @@ def process_images(
                 )
 
 
-def convert_flame(path, out_path):
-    s = open(path).read().split("\n")
-    # strip all lines
+def convert_flame(path, static_offset_path, out_path):
+
+    s = open(path).read().split('\n')
     s = [line.strip() for line in s if line.strip()]
+
     print(len(s))
-    print(len(s[0].split(" ")))
-    print(len(s[1].split(" ")))
-    print(len(s[2].split(" ")))
-    shape = np.array(
-        [float(i) for i in list(filter(lambda x: len(x) != 0, s[0].split(" ")[:300]))]
-    )
-    expr = np.array(
-        [float(i) for i in list(filter(lambda x: len(x) != 0, s[0].split(" ")[300:]))]
-    ).reshape(1, 100)
-    pose = np.array(
-        [float(i) for i in list(filter(lambda x: len(x) != 0, s[1].split(" ")))]
-    )
-    tran = np.array(
-        [float(i) for i in list(filter(lambda x: len(x) != 0, s[2].split(" ")))]
-    ).reshape(1, 3)
-    print(len(shape), len(expr), len(pose), len(tran))
+    print(len(s[0].split(' ')))
+    print(len(s[1].split(' ')))
+    print(len(s[2].split(' ')))
+    shape = np.array([float(i) for i in list(filter(lambda x: len(x)!=0, s[0].split(' ')[:300]))])
+    expr  = np.array([float(i) for i in list(filter(lambda x: len(x)!=0, s[0].split(' ')[300:]))]).reshape(1,100)
+    pose  = np.array([float(i) for i in list(filter(lambda x: len(x)!=0, s[1].split(' ')))])
+    tran  = np.array([float(i) for i in list(filter(lambda x: len(x)!=0, s[2].split(' ')))]).reshape(1,3)
+    print(len(shape),len(expr),len(pose),len(tran))
 
     pose *= -1
     expr *= -1
 
-    rot = pose[:3].reshape(1, 3)
-    neck = pose[3:6].reshape(1, 3)
-    jaw = pose[6:9].reshape(1, 3)
-    eye = pose[9:].reshape(1, 6)
-    offset = np.zeros((1, 5143, 3))
-    # tran = [[0 ,0, 0]]
+    rot  = pose[ :3].reshape(1,3)
+    neck = pose[3:6].reshape(1,3)
+    jaw  = pose[6:9].reshape(1,3)
+    eye  = pose[9: ].reshape(1,6)
+    
+    # static offsets
+    static_offset = np.loadtxt(static_offset_path, dtype=np.float32)
+    static_offset = np.concatenate([static_offset, np.zeros((5143 - 5023, 3))], axis=0)
+    static_offset = static_offset.reshape(1, 5143, 3)
+    static_offset /= 100 # cm to m
 
-    # print("translation", tran)
-    # print("rot", rot)
-    # print("neck", neck)
-    # print("jaw", jaw)
-    # print("eye", eye)
+    # offset = np.zeros((1,5143,3))
 
-    np.savez(
-        out_path,
-        translation=tran,
-        rotation=rot,
-        neck_pose=neck,
-        jaw_pose=jaw,
-        eyes_pose=eye,
-        shape=shape,
-        expr=expr,
-        static_offset=offset,
-    )
+    np.savez(out_path,translation = tran ,rotation = rot ,neck_pose = neck,jaw_pose = jaw ,eyes_pose = eye ,shape = shape ,expr = expr, static_offset = static_offset)
 
-
-def process_flame(data_dir, output_dir):
+def process_flame(
+    data_dir, output_dir
+):
     result_params_file = None
-    for filepath in Path(data_dir).rglob("resultParams.txt"):
-        print(filepath)
+    static_offset_file = None
+    for filepath in Path(data_dir).rglob("*.txt"):
         if "resultParams.txt" in filepath.name:
+            logger.info(f"Found resultParams.txt: {filepath}")
             result_params_file = filepath
+        if "offsets.txt" in filepath.name:
+            logger.info(f"Found offsets.txt: {filepath}")
+            static_offset_file = filepath
+        if result_params_file and static_offset_file:
             break
     if result_params_file is None:
         logger.error("resultParams.txt not found in the data directory.")
         return
+    if static_offset_file is None:
+        logger.error("offsets.txt not found in the data directory.")
+        return
 
-    logger.info(f"Processing FLAME parameters from {result_params_file}")
+    logger.info(f"Processing FLAME parameters...")
 
-    convert_flame(result_params_file, os.path.join(output_dir, "flame_params.npz"))
+    convert_flame(result_params_file, static_offset_file, os.path.join(output_dir, "flame_params.npz"))
+    
 
 
 if __name__ == "__main__":
