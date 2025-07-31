@@ -62,7 +62,7 @@ class ModelParams(ParamGroup):
         self.select_camera_id = -1
         self.omit_camera_id = [13, 14] # List of camera IDs to omit from training
 
-        self.scale_res = 0.25
+        self.scale_res = 1.0
 
 
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -84,7 +84,7 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         # 3D Gaussians
-        self.iterations = 2_000  # 30_000 (original)
+        self.iterations = 5_000  # 30_000 (original)
         self.position_lr_init = 0.005  # (scaled up according to mean triangle scale)  #0.00016 (original)
         self.position_lr_final = 0.0005 # (scaled up according to mean triangle scale) # 0.0000016 (original)
         self.position_lr_delay_mult = 0.01
@@ -104,7 +104,7 @@ class OptimizationParams(ParamGroup):
         self.flame_trans_lr = 1e-6
         self.flame_pose_lr = 1e-5
         self.percent_dense = 0.01
-        self.lambda_dssim = 0.5
+        self.lambda_dssim = 0.45
         self.lambda_xyz = 1e-1
         self.threshold_xyz = 0.5
         self.metric_xyz = False
@@ -117,9 +117,9 @@ class OptimizationParams(ParamGroup):
 
         # Lumio Optims
         self.lambda_filter = 10
-        self.bcull = False
+        self.bcull = True
         self.depth = True
-        self.max_scaling = 0.5  # LM3D : clamp scaling to 0.5
+        self.max_scaling = 1.0 # LM3D : clamp scaling to 1.0
 
         super().__init__(parser, "Optimization Parameters")
 
