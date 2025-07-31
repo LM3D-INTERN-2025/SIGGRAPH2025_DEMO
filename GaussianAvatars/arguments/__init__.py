@@ -89,8 +89,8 @@ class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         # 3D Gaussians
         self.iterations = 5_000  # 30_000 (original)
-        self.position_lr_init = 0.005  # (scaled up according to mean triangle scale)  #0.00016 (original)
-        self.position_lr_final = 0.0005 # (scaled up according to mean triangle scale) # 0.0000016 (original)
+        self.position_lr_init = 0.01  # (scaled up according to mean triangle scale)  #0.00016 (original)
+        self.position_lr_final = 0.001 # (scaled up according to mean triangle scale) # 0.0000016 (original)
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 600_000  # 30_000 (original)
         self.feature_lr = 0.01
@@ -98,8 +98,8 @@ class OptimizationParams(ParamGroup):
         self.scaling_lr = 0.005  # (scaled up according to mean triangle scale)  # 0.005 (original)
         self.rotation_lr = 0.001
         self.densification_interval = 200  # 100 (original)
-        self.opacity_reset_interval = 1000 # 3000 (original)
-        self.densify_from_iter = 100  # 500 (original)
+        self.opacity_reset_interval = 5_000 # 3000 (original)
+        self.densify_from_iter = 5_000  # 500 (original)
         self.densify_until_iter = 1_000  # 15_000 (original)
         self.densify_grad_threshold = 0.0005
         
@@ -109,7 +109,7 @@ class OptimizationParams(ParamGroup):
         self.flame_pose_lr = 1e-5
         self.percent_dense = 0.01
         self.lambda_dssim = 0.5
-        self.lambda_xyz = 1e-1
+        self.lambda_xyz = 0.
         self.threshold_xyz = 0.5
         self.metric_xyz = False
         self.lambda_scale = 1.
@@ -127,11 +127,11 @@ class OptimizationParams(ParamGroup):
         self.texture_lr = 0.0025
         self.texture_lambda = 0.1
 
-        self.initial_pc_size = 0.02 # 1.0 (original)
-        self.initial_pc_number = 100
-        self.initial_pc_number_eye = 500
+        self.initial_pc_size = 0.04 # 1.0 (original)
+        self.initial_pc_number = 200
+        self.initial_pc_number_eye = 100
         
-        self.normal_position_lr = 0.0005
+        self.normal_position_lr = 0.000005
 
         if self.disable_gaussian_splats:
             self.scaling_lr = 0.0
@@ -145,7 +145,7 @@ class OptimizationParams(ParamGroup):
 
         # Lumio Optims
         self.lambda_filter = 10
-        self.bcull = False
+        self.bcull = True
         self.depth = True
         self.max_scaling = 0.5  # LM3D : clamp scaling to 0.5
 

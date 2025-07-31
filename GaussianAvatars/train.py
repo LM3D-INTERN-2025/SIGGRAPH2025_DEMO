@@ -185,7 +185,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             filter_render += alpha_mesh * (1 - alpha_map)
 
 
-        if iteration % pipe.interval_media == 0:
+        if iteration % pipe.interval_media == 0 or iteration < 3:
             save_image_debug(gt_filter, os.path.join(dataset.model_path, "gt_filter"), iteration)
             save_image_debug(filter_render, os.path.join(dataset.model_path, "ren_filter"), iteration)
             save_image_debug(gt_image, os.path.join(dataset.model_path, "gt_image"), iteration)
@@ -447,14 +447,15 @@ if __name__ == "__main__":
     if args.interval > op.iterations:
         args.interval = op.iterations // 5
     if len(args.test_iterations) == 0:
-        args.test_iterations.extend(list(range(2)))
+        # args.test_iterations.extend(list(range(2)))
         args.test_iterations.extend(list(range(args.interval, args.iterations+1, args.interval)))
     if len(args.save_iterations) == 0:
-        args.save_iterations.extend(list(range(2)))
+        # args.save_iterations.extend(list(range(2)))
         args.save_iterations.extend(list(range(args.interval, args.iterations+1, args.interval)))
     if len(args.checkpoint_iterations) == 0:
         args.checkpoint_iterations.extend(list(range(args.interval, args.iterations+1, args.interval)))
     
+    # args.save_iterations.extend(list(range(2)))
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)

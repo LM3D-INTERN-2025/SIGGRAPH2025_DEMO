@@ -226,8 +226,12 @@ class GaussianModel:
             num_pts = self.binding.shape[0]
 
             if self.coord == "bary":
-                fused_point_cloud = torch.ones((num_pts, 3)).float().cuda()
-                fused_point_cloud = torch.tensor(np.random.random((num_pts, 3))).float().cuda()
+                fused_point_cloud = torch.zeros((num_pts, 3)).float().cuda()
+                # fused_point_cloud = torch.tensor(np.random.random((num_pts, 3))).float().cuda()
+                fused_point_cloud[..., 0:2] = torch.tensor(np.random.random((num_pts, 2))).float().cuda()
+                tmp = fused_point_cloud.sum(axis = 1) > 1.0
+                fused_point_cloud[tmp,0:2] = 1.0 - fused_point_cloud[tmp,0:2]
+                fused_point_cloud[:, 2] = 1.0 - fused_point_cloud[:, 0:2].sum(axis = 1)
 
             else:
                 fused_point_cloud = torch.zeros((num_pts, 3)).float().cuda()
@@ -502,7 +506,7 @@ class GaussianModel:
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
-        normal_offset = np.asarray(plydata.elements[0]["normal_offset_0"])
+        normal_offset = np.asarray(plydata.elements[0]["normal_offset"])
 
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
