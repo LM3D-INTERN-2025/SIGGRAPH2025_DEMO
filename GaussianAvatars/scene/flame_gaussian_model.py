@@ -20,7 +20,7 @@ from PIL import Image
 
 
 class FlameGaussianModel(GaussianModel):
-    def __init__(self, sh_degree : int, coord, disable_flame_static_offset=False, not_finetune_flame_params=False, painted_tex_path="", n_shape=300, n_expr=100):
+    def __init__(self, sh_degree : int, coord, opt = None, disable_flame_static_offset=False, not_finetune_flame_params=False, painted_tex_path="", n_shape=300, n_expr=100):
         super().__init__(sh_degree, coord)
 
         self.disable_flame_static_offset = disable_flame_static_offset
@@ -49,11 +49,19 @@ class FlameGaussianModel(GaussianModel):
         # binding is initialized once the mesh topology is known
         if self.binding is None:
             # self.binding = torch.arange(len(self.flame_model.faces)).cuda()
-            n_init = 100
-            n_eye_init = 500
+            if opt is not None:
+                n_init = opt.initial_pc_number 
+                n_eye_init = opt.initial_pc_number_eye
+            else:
+                n_init = 1
+                n_eye_init = 1
             eyelid = self.flame_model.mask.get_fid_by_region(['eye_region'])
+            back_head = self.flame_model.mask.get_fid_by_region(['back_head_2'])
+            face_filter = torch.ones(len(self.flame_model.faces), dtype = bool)
+            face_filter[back_head] = False
+            faces = torch.arange(len(self.flame_model.faces))[face_filter]
             repeated_eyelid = torch.repeat_interleave(eyelid, n_eye_init).cuda()
-            self.binding = torch.repeat_interleave(torch.arange(len(self.flame_model.faces)), n_init).cuda()
+            self.binding = torch.repeat_interleave(faces, n_init).cuda()
             self.binding = torch.cat((self.binding, repeated_eyelid), dim=0)
 
             self.binding_counter = torch.ones(len(self.flame_model.faces), dtype=torch.int32).cuda() * n_init
@@ -317,3 +325,4 @@ class FlameGaussianModel(GaussianModel):
             self._scaling = self._scaling[mask]
             self._rotation = self._rotation[mask]
             self._opacity = self._opacity[mask]
+            self.normal_offset = self.normal_offset[mask]

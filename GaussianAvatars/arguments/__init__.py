@@ -81,27 +81,27 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
-        self.interval_media = 1  
+        self.interval_media = 500  
         self.load_from_iter = 5000
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         # 3D Gaussians
-        self.iterations = 50  # 30_000 (original)
+        self.iterations = 5_000  # 30_000 (original)
         self.position_lr_init = 0.005  # (scaled up according to mean triangle scale)  #0.00016 (original)
         self.position_lr_final = 0.0005 # (scaled up according to mean triangle scale) # 0.0000016 (original)
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 600_000  # 30_000 (original)
-        self.feature_lr = 0.0025
-        self.opacity_lr = 0.05
+        self.feature_lr = 0.01
+        self.opacity_lr = 0.2
         self.scaling_lr = 0.005  # (scaled up according to mean triangle scale)  # 0.005 (original)
         self.rotation_lr = 0.001
-        self.densification_interval = 100  # 100 (original)
+        self.densification_interval = 200  # 100 (original)
         self.opacity_reset_interval = 1000 # 3000 (original)
         self.densify_from_iter = 100  # 500 (original)
-        self.densify_until_iter = 600_000  # 15_000 (original)
-        self.densify_grad_threshold = 0.0002
+        self.densify_until_iter = 1_000  # 15_000 (original)
+        self.densify_grad_threshold = 0.0005
         
         # GaussianAvatars
         self.flame_expr_lr = 1e-3
@@ -120,14 +120,18 @@ class OptimizationParams(ParamGroup):
         self.lambda_dynamic_offset_std = 0  #1.
 
 
-        self.disable_gaussian_splats = True
-        self.with_texture = True
+        self.disable_gaussian_splats = False
+        self.with_texture = False
         self.texture_start_iter = 0
         self.train_texture = False
         self.texture_lr = 0.0025
         self.texture_lambda = 0.1
 
-        self.initial_pc_size = 0.01 # 1.0 (original)
+        self.initial_pc_size = 0.02 # 1.0 (original)
+        self.initial_pc_number = 100
+        self.initial_pc_number_eye = 500
+        
+        self.normal_position_lr = 0.0005
 
         if self.disable_gaussian_splats:
             self.scaling_lr = 0.0

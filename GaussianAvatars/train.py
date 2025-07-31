@@ -56,7 +56,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     save_config(dataset, opt, pipe)
     if dataset.bind_to_mesh:
-        gaussians = FlameGaussianModel(dataset.sh_degree, dataset.coord, dataset.disable_flame_static_offset, dataset.not_finetune_flame_params, dataset.texture_path)
+        gaussians = FlameGaussianModel(dataset.sh_degree, dataset.coord, opt, dataset.disable_flame_static_offset, dataset.not_finetune_flame_params, dataset.texture_path)
         mesh_renderer = NVDiffRenderer()
     else:
         gaussians = GaussianModel(dataset.sh_degree, dataset.coord)
@@ -171,12 +171,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         override_color = torch.ones_like(gaussians._xyz).cuda()
         filter_render = render(viewpoint_cam, gaussians, pipe, torch.zeros(3).cuda() , override_color=override_color, backface_culling=opt.bcull, depth_map=opt.depth)["render"]
 
-
         if opt.disable_gaussian_splats:
             image = torch.zeros_like(image)
-            alpha_map = torch.zeros_like(alpha_map)
-
-        # image = torch.cat((image, alpha_map),dim = 0) 
+            filter_render = torch.zeros_like(alpha_map)
        
         if opt.with_texture and iteration >= opt.texture_start_iter:
             out_dict = mesh_renderer.render_from_camera(gaussians.verts, gaussians.faces, gaussians.flame_model.verts_uvs, gaussians.flame_model.textures_idx, gaussians.flame_model._tex_painted, gaussians.flame_model._tex_alpha, viewpoint_cam)
@@ -185,7 +182,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mesh = rgba_mesh[3:, :, :]
             # print("debug texture", image.shape, rgba_mesh.shape,torch.max(image_s[3:, :, :]), torch.min(image_s[3:, :, :]),torch.max(alpha_mesh), torch.min(alpha_mesh))
             image += rgb_mesh * (1 - alpha_map)
-            alpha_map += alpha_mesh * (1 - alpha_map)
+            filter_render += alpha_mesh * (1 - alpha_map)
 
 
         if iteration % pipe.interval_media == 0:
@@ -204,8 +201,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             texture = gaussians.flame_model._tex_painted.cuda()
             texture_alpha = gaussians.flame_model._tex_alpha.cuda()
             losses['texture'] = l1_loss(texture, gt_texture) * opt.texture_lambda
-            losses['texture_alpha'] = l1_loss(texture_alpha, torch.zeros_like(texture_alpha)) * opt.texture_lambda
-            # print("debug texture loss:", losses['texture'].item())
 
         # LM3D : filter loss
         losses['filter'] = F.l1_loss(filter_render, gt_filter) * opt.lambda_filter
@@ -442,7 +437,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     # parser.add_argument("--interval", type=int, default=60_000, help="A shared iteration interval for test and saving results and checkpoints.")
-    parser.add_argument("--interval", type=int, default=500, help="A shared iteration interval for test and saving results and checkpoints.")
+    parser.add_argument("--interval", type=int, default=1000, help="A shared iteration interval for test and saving results and checkpoints.")
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
