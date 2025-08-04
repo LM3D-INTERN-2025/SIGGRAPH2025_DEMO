@@ -7,7 +7,7 @@ import cv2
 import logging
 import re
 
-from utils.config import rot_dict
+from utils.config import rot_dict, train_cam
 from utils.camera import construct_intrinsics
 
 from pathlib import Path
@@ -128,8 +128,9 @@ def process_cameras(camera_dir, width, height, output_dir, rot=[]):
                 camera_matrix = parse_camera_matrix_from_file(file_path)
                 intrinsics_value = parse_intrinsics_from_file(file_path)
                 cam_num = int(name.split(".")[0][-2:])
-                matrices.append((cam_num, camera_matrix))
-                intrinsics.append((cam_num, intrinsics_value))
+                if cam_num in train_cam:
+                    matrices.append((cam_num, camera_matrix))
+                    intrinsics.append((cam_num, intrinsics_value))
             except Exception as e:
                 logger.error(f"Error parsing {name}: {e}", file=sys.stderr)
 
@@ -158,7 +159,7 @@ def process_cameras(camera_dir, width, height, output_dir, rot=[]):
             1216.000000,
         )
         new_matrix = image_transform @ _intrinsic
-        out_intrins.append(new_matrix)
+        out_intrins.append((cam_num, new_matrix))
 
     # ------------------------ EXTRINSICS ------------------------
     out_extr = []
@@ -182,7 +183,7 @@ def process_cameras(camera_dir, width, height, output_dir, rot=[]):
         if cam in rot:
             mat[[0, 1], :] *= -1
 
-        out_extr.append(mat)
+        out_extr.append((cam, mat))
 
     # ------------------------ OUTPUT ------------------------
 
@@ -196,9 +197,9 @@ def process_cameras(camera_dir, width, height, output_dir, rot=[]):
         json.dump(
             {
                 "intrinsics": {
-                    idx: mat.tolist() for idx, mat in enumerate(out_intrins)
+                    cam: mat.tolist() for cam, mat in out_intrins
                 },
-                "world_2_cam": {idx: mat.tolist() for idx, mat in enumerate(out_extr)},
+                "world_2_cam": {cam: mat.tolist() for cam, mat in out_extr},
                 "width": width,
                 "height": height,
             },

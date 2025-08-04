@@ -14,7 +14,7 @@ GA_NAME="ga_$OUT_NAME"
 # Prepare for nerf exporting
 echo "Preparing for nerf exporting..."
 conda activate accel
-python Prep/convert.py -i /mnt/nas/sitt/demo/data_prep/lumio_scans/bird_blue_shirt --width 1740 --height 2296 -o Data/to_export/$OUT_NAME -itype flash_1
+python Prep/convert.py -i /mnt/nas/sitt/demo/SIGGRAPH2025_DEMO/Data/P5/P5_bird --width 1740 --height 2296 -o Data/to_export/$OUT_NAME -itype flash_1
 
 # Prepare for Gaussian Avatar
 echo "Preparing for Gaussian Avatar..."
