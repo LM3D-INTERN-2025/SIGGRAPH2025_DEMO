@@ -10,6 +10,7 @@ plyfile
 tyro
 dearpygui
 roma
+opencv-python==4.5.5.64
 git+https://github.com/NVlabs/nvdiffrast
 #git+https://github.com/facebookresearch/pytorch3d.git
 submodules/diff-gaussian-rasterization

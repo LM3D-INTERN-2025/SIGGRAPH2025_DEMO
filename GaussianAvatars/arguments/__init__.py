@@ -60,7 +60,7 @@ class ModelParams(ParamGroup):
         self.disable_flame_static_offset = False
         self.not_finetune_flame_params = False
         self.select_camera_id = -1
-        self.omit_camera_id = [13, 14] # List of camera IDs to omit from training
+        self.omit_camera_id = [] # List of camera IDs to omit from training
 
         self.scale_res = 1.0
 

@@ -2,5 +2,6 @@ Data
 Result
 
 *.pkl
+environment.yaml
 
 __pycache__
